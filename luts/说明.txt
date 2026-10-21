@@ -1,0 +1,12 @@
+本文件夹里的 .cube 文件是调色查找表（LUT），共 39 个：
+  Fujifilm GFX 胶片模拟 (sRGB)   20 个，命名：机型 + 胶片模拟名 (sRGB)，如 GFX50S PROVIA (sRGB)
+  Leica Look (sRGB)              19 个，命名：Leica Look + 滤镜名 (sRGB)，如 Leica Look CHR (sRGB)
+
+【工作空间】全部 LUT 的输入、输出都是 sRGB，请用在已经转成 sRGB 的画面上
+（照片编辑里的「风格（LUT）」就是这样使用的）。不要套在 Log 或线性素材上。
+
+【来源】这些 LUT 收集自公开渠道。名称中的品牌与型号仅用于说明风格，
+与相应厂商无关，也不是厂商官方产品。如有疑问请在项目里提 Issue。
+
+【添加自己的 LUT】不要改这个文件夹：在照片编辑「风格（LUT）」里点「添加 LUT…」，
+文件会存到 ~/.photo-cull/luts（Windows 为 用户文件夹\.photo-cull\luts），升级工具也不会丢。

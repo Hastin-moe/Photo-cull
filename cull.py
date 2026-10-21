@@ -1,0 +1,1735 @@
+#!/usr/bin/env python3
+"""照片筛选工具 photo-cull
+
+本地技术评分（对焦／模糊／曝光／人脸与闭眼／连拍分组）＋可选 AI 审美细评（Claude／ChatGPT／Grok）。
+同名 RAW＋JPEG 自动配对，一起评分、同步标记、同步删除。
+星级／色标写成 XMP（RAW 用边车文件，JPEG 写入文件内嵌 XMP，只改元数据、不动画面数据），并生成网页报告。
+
+画面数据永远不会被修改；删除只会移到废纸篓（或照片文件夹内的 _待删除）。
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import concurrent.futures as cf
+import csv
+import hashlib
+import html
+import io
+import json
+import math
+import os
+import re
+import shutil
+import sys
+import threading
+import time
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageOps
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover
+    sys.exit("缺少 opencv：pip install -r requirements.txt")
+
+VERSION = "1.5-beta"
+RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2", ".pef", ".3fr", ".iiq"}
+IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".heif", ".hif", ".webp"}
+JPEG_EXT = {".jpg", ".jpeg"}
+TRASH_DIR = "_待删除"
+WORK_SIDE = 1600   # 技术分析用的长边像素
+FOCUS_SIDE = 2400  # 对焦检测用的长边像素（统一尺度，避免高像素机身在 1:1 下普遍“显软”）
+SIGS: dict = {}    # 画面签名（用于同场景分组），不写入报告
+AI_SIDE = 1024     # 发给 AI 的长边像素
+THUMB_SIDE = 520   # 报告缩略图
+
+# 供图形界面使用的钩子：进度回调与取消信号
+PROGRESS = None            # callable(stage, done, total)
+API_KEYS: dict = {}        # 图形界面传入的 API Key（优先于环境变量，不写入环境）
+CANCEL = threading.Event()
+
+
+class Cancelled(Exception):
+    pass
+
+
+def _report(stage, done, total):
+    if PROGRESS:
+        try:
+            PROGRESS(stage, done, total)
+        except Exception:
+            pass
+    if CANCEL.is_set():
+        raise Cancelled()
+
+# ───────────────────────── 数据结构 ─────────────────────────
+
+@dataclass
+class Photo:
+    path: str                      # 主文件（有 RAW 时为 RAW）
+    name: str
+    kind: str                      # raw / image
+    members: list = field(default_factory=list)   # 同名配对的全部文件（RAW、JPEG、HIF…）
+    source: str = ""               # 实际用于分析的文件（有 JPEG 时用 JPEG）
+    time: float = 0.0
+    time_text: str = ""
+    camera: str = ""
+    lens: str = ""
+    exposure: str = ""
+    width: int = 0
+    height: int = 0
+    # 技术指标
+    sharp_global: float = 0.0
+    sharp_subject: float = 0.0
+    sharp_face: float | None = None
+    blur: float = 0.0              # 再模糊指标：0 很锐，越大越糊（与画面细节多少无关）
+    mean_luma: float = 0.0
+    clip_high: float = 0.0
+    clip_low: float = 0.0
+    faces: int = 0
+    eyes_missing: int = 0          # 检测到人脸但找不到眼睛的数量（可能闭眼／侧脸）
+    dhash: str = ""
+    # 结果
+    group: int = 0
+    group_size: int = 1
+    group_best: bool = True
+    flags: list = field(default_factory=list)
+    local_score: float = 0.0
+    tier: str = ""                 # reject / alt / candidate
+    ai: dict | None = None
+    stars: int = 0                 # -1 = 拒绝
+    label: str = ""
+    thumb: str = ""
+    error: str = ""
+    manual: bool = False           # 星级经人工调整
+    trashed: bool = False          # 已移到废纸篓
+
+
+# ───────────────────────── 读取 ─────────────────────────
+
+_heif_ready = None
+
+def _ensure_heif():
+    global _heif_ready
+    if _heif_ready is None:
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+            _heif_ready = True
+        except ImportError:
+            _heif_ready = False
+    return _heif_ready
+
+
+def _fit(img: Image.Image, side: int) -> Image.Image:
+    w, h = img.size
+    s = side / max(w, h)
+    if s < 1:
+        img = img.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
+    return img
+
+
+
+# ───────────────────────── TIFF 结构 RAW（DNG／ARW 等）直读 ─────────────────────────
+# 不依赖 rawpy：直接从 TIFF IFD 里找机内嵌入的 JPEG 预览，并读取基本 EXIF。
+
+import struct as _st
+_TSIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8}
+_TFMT = {1: "B", 3: "H", 4: "I", 6: "b", 8: "h", 9: "i", 13: "I", 16: "Q"}
+
+
+class TiffRaw:
+    def __init__(self, path: Path):
+        self.f = open(path, "rb")
+        head = self.f.read(8)
+        if head[:2] == b"II":
+            self.e = "<"
+        elif head[:2] == b"MM":
+            self.e = ">"
+        else:
+            raise ValueError("不是 TIFF 结构的 RAW")
+        magic, first = _st.unpack(self.e + "HI", head[2:8])
+        if magic != 42:
+            raise ValueError("不支持的 TIFF 变体")
+        self.size = path.stat().st_size
+        self.ifds = []          # [(kind, {tag: value})]
+        self._walk(first, "ifd0", set(), 0)
+
+    def close(self):
+        self.f.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+    def _read(self, off, n):
+        if off < 0 or off + n > self.size:
+            raise ValueError("偏移越界")
+        self.f.seek(off)
+        return self.f.read(n)
+
+    def _ifd(self, off):
+        n = _st.unpack(self.e + "H", self._read(off, 2))[0]
+        if n > 1000:
+            raise ValueError("IFD 异常")
+        raw = self._read(off + 2, n * 12 + 4)
+        tags = {}
+        for i in range(n):
+            tag, typ, cnt = _st.unpack(self.e + "HHI", raw[i * 12:i * 12 + 8])
+            val = raw[i * 12 + 8:i * 12 + 12]
+            sz = _TSIZE.get(typ, 1) * cnt
+            if sz > 4:
+                if sz > 1 << 20:      # 大块数据只记偏移
+                    tags[tag] = ("big", typ, cnt, _st.unpack(self.e + "I", val)[0])
+                    continue
+                try:
+                    val = self._read(_st.unpack(self.e + "I", val)[0], sz)
+                except ValueError:
+                    continue
+            tags[tag] = self._decode(typ, cnt, val[:sz] if sz <= 4 else val)
+        nxt = _st.unpack(self.e + "I", raw[n * 12:n * 12 + 4])[0]
+        return tags, nxt
+
+    def _decode(self, typ, cnt, b):
+        if typ == 2:
+            return b.split(b"\0", 1)[0].decode("latin-1", "replace").strip()
+        if typ in (5, 10):
+            fmt = self.e + ("I" if typ == 5 else "i") * (2 * cnt)
+            v = _st.unpack(fmt, b[:8 * cnt])
+            r = [(v[i] / v[i + 1]) if v[i + 1] else 0.0 for i in range(0, len(v), 2)]
+            return r[0] if cnt == 1 else r
+        if typ in (11, 12):
+            fmt = self.e + ("f" if typ == 11 else "d") * cnt
+            v = _st.unpack(fmt, b[:_TSIZE[typ] * cnt])
+            return v[0] if cnt == 1 else list(v)
+        if typ in _TFMT:
+            v = _st.unpack(self.e + _TFMT[typ] * cnt, b[:_TSIZE[typ] * cnt])
+            return v[0] if cnt == 1 else list(v)
+        return b
+
+    def _walk(self, off, kind, seen, depth):
+        while off and off not in seen and depth < 8 and len(self.ifds) < 64:
+            seen.add(off)
+            try:
+                tags, nxt = self._ifd(off)
+            except (ValueError, _st.error):
+                return
+            self.ifds.append((kind, tags))
+            for sub_tag, sub_kind in ((0x14A, "sub"), (0x8769, "exif")):
+                subs = tags.get(sub_tag)
+                if isinstance(subs, int):
+                    subs = [subs]
+                if isinstance(subs, list):
+                    for so in subs:
+                        if isinstance(so, int):
+                            self._walk(so, sub_kind, seen, depth + 1)
+            off, kind = nxt, "ifd" + str(len(self.ifds))
+
+    def tag(self, tag, kinds=None):
+        for kind, tags in self.ifds:
+            if (kinds is None or kind in kinds) and tag in tags and not isinstance(tags[tag], tuple):
+                return tags[tag]
+        return None
+
+    def previews(self):
+        """按大小降序返回候选 JPEG 字节串。"""
+        cands = []
+        for kind, t in self.ifds:
+            if 0x201 in t and 0x202 in t:
+                off, n = t[0x201], t[0x202]
+                if isinstance(off, int) and isinstance(n, int) and n > 1000:
+                    cands.append((off, n))
+            comp, photo = t.get(0x103), t.get(0x106)
+            strips, counts = t.get(0x111), t.get(0x117)
+            # 预览：基线 JPEG（6/7）且不是 CFA／LinearRaw 原始数据
+            if comp in (6, 7) and photo in (2, 6) and strips is not None and counts is not None:
+                if isinstance(strips, int):
+                    strips, counts = [strips], [counts]
+                if len(strips) == 1 and counts[0] > 1000:
+                    cands.append((strips[0], counts[0]))
+        out = []
+        for off, n in sorted(set(cands), key=lambda c: -c[1]):
+            try:
+                data = self._read(off, n)
+            except ValueError:
+                continue
+            if data[:2] == b"\xff\xd8":
+                out.append(data)
+        return out
+
+
+_ORIENT = {2: [Image.Transpose.FLIP_LEFT_RIGHT], 3: [Image.Transpose.ROTATE_180], 4: [Image.Transpose.FLIP_TOP_BOTTOM],
+           5: [Image.Transpose.TRANSPOSE], 6: [Image.Transpose.ROTATE_270], 7: [Image.Transpose.TRANSVERSE],
+           8: [Image.Transpose.ROTATE_90]}
+
+
+def open_scaled(src, min_side: int | None = None) -> tuple[Image.Image, tuple]:
+    """打开图片；JPEG 且只需要长边 min_side 时，按 1/2、1/4、1/8 直接缩小解码（DCT 域，快且不失真）。
+    返回 (图片, (原宽, 原高, 解码宽, 解码高))，交给 _with_full 换算旋转后的原尺寸。"""
+    img = Image.open(src)
+    w0, h0 = img.size
+    if min_side and img.format == "MPO" and getattr(img, "n_frames", 1) > 1:
+        # 索尼等相机的 JPEG 是 MPO：除了主图，还带一张约 1616 像素的预览图，够用时直接用它（快十几倍）
+        orient = img.getexif().get(0x0112, 1) or 1
+        best = None
+        for k in range(1, img.n_frames):
+            try:
+                img.seek(k)
+            except EOFError:
+                break
+            w, h = img.size
+            if max(w, h) >= min_side and abs(w / h - w0 / h0) < 0.02 and (best is None or w < best[1]):
+                best = (k, w)
+        if best:
+            img.seek(best[0])
+            img.load()
+            fr = img.copy()
+            w1, h1 = fr.size
+            if (fr.getexif().get(0x0112) or 1) == 1:      # 预览帧不带方向时，按主图的方向转正
+                for op in _ORIENT.get(int(orient), []):
+                    fr = fr.transpose(op)
+                fr.info.pop("exif", None)
+            return fr, (w0, h0, w1, h1)
+        img.seek(0)
+    if min_side and img.format in ("JPEG", "MPO") and img.mode in ("RGB", "L", "CMYK"):
+        w, h = img.size
+        s = min_side / max(w, h)
+        if s < 0.5:
+            img.draft(img.mode, (max(1, int(w * s)), max(1, int(h * s))))
+    img.load()
+    return img, (w0, h0, img.size[0], img.size[1])
+
+
+def _with_full(img: Image.Image, dims: tuple) -> Image.Image:
+    """记录原始尺寸（按方向旋转后的宽高），缩小解码时报告里仍显示真实像素数。"""
+    w0, h0, w1, h1 = dims
+    img.info["full_size"] = (w0, h0) if (img.size == (w1, h1) or w1 == h1) else (h0, w0)
+    return img
+
+
+def tiff_preview(path: Path, min_side: int | None = None) -> Image.Image | None:
+    with TiffRaw(path) as t:
+        orient = t.tag(0x112, {"ifd0"}) or 1
+        cands = t.previews()
+        if min_side:
+            # 只需要小图（缩略图等）时，挑长边够用的最小那张内嵌预览（ARW 里有 8640 和 1616 两张）
+            sized = []
+            for data in cands:
+                try:
+                    sized.append((max(Image.open(io.BytesIO(data)).size), data))
+                except Exception:
+                    continue
+            ok = sorted((sz, d) for sz, d in sized if sz >= min_side)
+            cands = [d for _, d in ok] + [d for sz, d in sorted(sized, key=lambda x: -x[0]) if sz < min_side]
+        for data in cands:
+            try:
+                img, dims = open_scaled(io.BytesIO(data), min_side)
+            except Exception:
+                continue
+            if max(dims[:2]) < 600:
+                continue
+            own = img.getexif().get(0x0112, 1)
+            if own != 1:
+                img = ImageOps.exif_transpose(img)
+            else:
+                for op in _ORIENT.get(int(orient) if isinstance(orient, int) else 1, []):
+                    img = img.transpose(op)
+            return _with_full(img, dims)
+    return None
+
+
+def tiff_exif(path: Path) -> dict:
+    with TiffRaw(path) as t:
+        def num(tag):
+            v = t.tag(tag, {"exif", "ifd0"})
+            return v[0] if isinstance(v, list) else v
+        out = {"model": t.tag(0x110) or t.tag(0xC614) or "", "lens": t.tag(0xA434, {"exif", "ifd0"}) or "",
+               "dt": t.tag(0x9003, {"exif"}) or t.tag(0x132) or "", "subsec": str(t.tag(0x9291, {"exif"}) or "")}
+        et, fn, iso, fl = num(0x829A), num(0x829D), num(0x8827), num(0x920A)
+        if et:
+            out["shutter"] = f"1/{round(1/et)}" if 0 < et < 1 else f"{et:g}"
+        if fn:
+            out["fnum"] = f"{fn:g}"
+        if iso:
+            out["iso"] = str(iso)
+        if fl:
+            out["focal"] = f"{fl:g}"
+        return {k: (v if isinstance(v, str) else str(v)) for k, v in out.items()}
+
+def raf_jpeg(path: Path) -> bytes:
+    """富士 RAF：文件头第 84／88 字节（大端）记录内嵌 JPEG 的偏移和长度，JPEG 里带完整 EXIF。"""
+    with open(path, "rb") as f:
+        head = f.read(100)
+        if not head.startswith(b"FUJIFILMCCD-RAW"):
+            raise ValueError("不是富士 RAF 文件")
+        off, ln = _st.unpack(">II", head[84:92])
+        size = path.stat().st_size
+        if not (100 <= off < size and 1000 < ln <= size - off):
+            raise ValueError("RAF 内嵌预览位置异常")
+        f.seek(off)
+        data = f.read(ln)
+    if data[:2] != b"\xff\xd8":
+        raise ValueError("RAF 内嵌预览不是 JPEG")
+    return data
+
+
+def load_preview(path: Path, min_side: int | None = None) -> Image.Image:
+    """返回 RGB 预览图。RAW 优先用机内嵌入的 JPEG（快、颜色接近机内直出）。
+    min_side：只需要长边至少这么多像素时传入，大 JPEG 会缩小解码；img.info["full_size"] 记录原始尺寸。"""
+    ext = path.suffix.lower()
+    if ext == ".raf":
+        try:
+            img, dims = open_scaled(io.BytesIO(raf_jpeg(path)), min_side)
+            img = ImageOps.exif_transpose(img)
+            if max(dims[:2]) >= 600:
+                return _with_full(img.convert("RGB"), dims)
+        except (ValueError, OSError, _st.error):
+            pass
+    if ext in RAW_EXT:
+        # 1) TIFF 结构直读内嵌预览（DNG／ARW／NEF 等，最快、无需 rawpy）
+        try:
+            img = tiff_preview(path, min_side)
+            if img is not None:
+                full = img.info["full_size"]
+                img = img.convert("RGB")
+                img.info["full_size"] = full
+                return img
+        except (ValueError, OSError, _st.error):
+            pass
+        # 2) 交给 rawpy（CR3 等非 TIFF 结构，或没有可用预览）
+        try:
+            import rawpy
+        except ImportError:
+            raise RuntimeError("这个 RAW 没有可直接读取的预览，需要 rawpy：pip install rawpy")
+        with rawpy.imread(str(path)) as raw:
+            img = None
+            try:
+                th = raw.extract_thumb()
+                if th.format == rawpy.ThumbFormat.JPEG:
+                    img, _r = open_scaled(io.BytesIO(th.data), min_side)
+                    # 嵌入预览自带方向时以它为准
+                    if img.getexif().get(0x0112, 1) != 1:
+                        img = ImageOps.exif_transpose(img)
+                    else:
+                        img = _apply_flip(img, raw.sizes.flip)
+                elif th.format == rawpy.ThumbFormat.BITMAP:
+                    img = _apply_flip(Image.fromarray(th.data), raw.sizes.flip)
+            except Exception:
+                img = None
+            if img is None or max(img.size) < 600:
+                rgb = raw.postprocess(half_size=True, use_camera_wb=True, no_auto_bright=False, output_bps=8)
+                img = Image.fromarray(rgb)  # postprocess 已处理方向
+        return img.convert("RGB")
+    if ext in {".heic", ".heif", ".hif"} and not _ensure_heif():
+        raise RuntimeError("读取 HEIC/HIF 需要 pillow-heif：pip install pillow-heif")
+    img, dims = open_scaled(path, min_side)
+    img = ImageOps.exif_transpose(img)
+    return _with_full(img.convert("RGB"), dims)
+
+
+def _apply_flip(img: Image.Image, flip: int) -> Image.Image:
+    # LibRaw flip：3=180°，5=逆时针90°，6=顺时针90°
+    if flip == 3:
+        return img.rotate(180, expand=True)
+    if flip == 5:
+        return img.rotate(90, expand=True)
+    if flip == 6:
+        return img.rotate(-90, expand=True)
+    return img
+
+
+def read_exif(path: Path) -> dict:
+    out = {}
+    if path.suffix.lower() == ".raf":
+        try:
+            out = _pil_exif(io.BytesIO(raf_jpeg(path)))
+            if out.get("dt"):
+                return out
+        except (ValueError, OSError, _st.error):
+            out = {}
+    if path.suffix.lower() in RAW_EXT and path.suffix.lower() != ".raf":
+        try:
+            out = tiff_exif(path)
+            if out.get("dt"):
+                return out
+        except (ValueError, OSError, _st.error):
+            out = {}
+    try:
+        import exifread
+        with open(path, "rb") as f:
+            tags = exifread.process_file(f, details=False, stop_tag="EXIF MakerNote")
+        g = lambda k: str(tags[k]).strip() if k in tags else ""
+        out = {
+            "dt": g("EXIF DateTimeOriginal") or g("Image DateTime"),
+            "subsec": g("EXIF SubSecTimeOriginal"),
+            "model": g("Image Model"),
+            "lens": g("EXIF LensModel"),
+            "shutter": g("EXIF ExposureTime"),
+            "fnum": g("EXIF FNumber"),
+            "iso": g("EXIF ISOSpeedRatings") or g("EXIF PhotographicSensitivity"),
+            "focal": g("EXIF FocalLength"),
+        }
+    except Exception:
+        pass
+    if not out.get("dt") and path.suffix.lower() != ".raf":
+        try:  # HEIC/PNG 等交给 Pillow
+            if path.suffix.lower() in {".heic", ".heif", ".hif"}:
+                _ensure_heif()
+            got = _pil_exif(path)
+            out = {**got, **{k: v for k, v in out.items() if v}}
+        except Exception:
+            pass
+    return out
+
+
+def _pil_exif(src) -> dict:
+    out = {}
+    with Image.open(src) as im:
+        ex = im.getexif()
+        sub = ex.get_ifd(0x8769)
+        out["model"] = str(ex.get(0x0110, "")).strip()
+        out["dt"] = str(sub.get(0x9003) or ex.get(0x0132) or "")
+        out["subsec"] = str(sub.get(0x9291) or "")
+        out["lens"] = str(sub.get(0xA434, "")).strip()
+        et, fn, iso, fl = sub.get(0x829A), sub.get(0x829D), sub.get(0x8827), sub.get(0x920A)
+        if et:
+            et = float(et); out["shutter"] = f"1/{round(1/et)}" if 0 < et < 1 else f"{et:g}"
+        if fn: out["fnum"] = f"{float(fn):g}"
+        if iso: out["iso"] = str(iso[0] if isinstance(iso, tuple) else iso)
+        if fl: out["focal"] = f"{float(fl):g}"
+    return out
+
+
+def _ratio(text: str) -> str:
+    if "/" in text:
+        a, b = text.split("/", 1)
+        try:
+            v = float(a) / float(b)
+            return f"{v:g}" if v >= 1 else f"{v:.1f}".rstrip("0").rstrip(".")
+        except (ValueError, ZeroDivisionError):
+            return text
+    return text
+
+
+def exposure_text(e: dict) -> str:
+    parts = []
+    if e.get("focal"): parts.append(_ratio(e["focal"]) + "mm")
+    if e.get("fnum"): parts.append("f/" + _ratio(e["fnum"]))
+    if e.get("shutter"): parts.append(e["shutter"] + "s")
+    if e.get("iso"): parts.append("ISO" + e["iso"])
+    return " ".join(parts)
+
+
+def capture_time(e: dict, path: Path) -> float:
+    dt = e.get("dt", "")
+    try:
+        t = datetime.strptime(dt[:19], "%Y:%m:%d %H:%M:%S").timestamp()
+        sub = re.sub(r"\D", "", e.get("subsec", ""))
+        if sub:
+            t += float("0." + sub)
+        return t
+    except ValueError:
+        return path.stat().st_mtime
+
+
+# ───────────────────────── 技术分析 ─────────────────────────
+
+_cascades = {}
+
+def _cascade(name: str):
+    """OpenCV 4.x 自带 Haar 模型；不可用时返回 None（跳过人脸检测）。"""
+    if name not in _cascades:
+        c = None
+        try:
+            c = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, name))
+            if c.empty():
+                c = None
+        except AttributeError:
+            c = None
+        _cascades[name] = c
+    return _cascades[name]
+
+
+def lap_var(gray: np.ndarray) -> float:
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def subject_sharpness(gray: np.ndarray, grid: int = 8, top: int = 3) -> float:
+    """浅景深照片背景是虚的，所以取最清晰的几块区域代表主体清晰度。"""
+    h, w = gray.shape
+    vals = []
+    for i in range(grid):
+        for j in range(grid):
+            tile = gray[i * h // grid:(i + 1) * h // grid, j * w // grid:(j + 1) * w // grid]
+            if tile.size and tile.std() > 4:      # 跳过纯色块（天空、墙）
+                vals.append(lap_var(tile))
+    if not vals:
+        return lap_var(gray)
+    vals.sort(reverse=True)
+    return float(np.mean(vals[:top]))
+
+
+def reblur(tile: np.ndarray) -> float:
+    """Crété-Roffet 再模糊指标：把图再模糊一次，看边缘变化有多大。
+    已经很糊的图再模糊几乎不变（接近 1），锐利的图变化大（接近 0）。与纹理多少基本无关。"""
+    F = tile.astype(np.float32)
+    total = kept = 0.0
+    # 两个方向按梯度能量加权合并：竖条纹这类单一方向的纹理不会被误判
+    for k, ax in (((1, 9), 1), ((9, 1), 0)):
+        B = cv2.blur(F, k)
+        dF = np.abs(np.diff(F, axis=ax))
+        dB = np.abs(np.diff(B, axis=ax))
+        total += float(dF.sum())
+        kept += float(np.maximum(0, dF - dB).sum())
+    return (total - kept) / total if total > 0 else 1.0
+
+
+def focus_blur(gray_full: np.ndarray) -> float:
+    """取画面中最锐利的两块区域代表主体（浅景深背景虚化不影响判断）。"""
+    h, w = gray_full.shape
+    s = min(1.0, FOCUS_SIDE / max(h, w))
+    g = cv2.resize(gray_full, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else gray_full
+    h, w = g.shape
+    tiles = []
+    for i in range(8):
+        for j in range(8):
+            t = g[i * h // 8:(i + 1) * h // 8, j * w // 8:(j + 1) * w // 8]
+            if t.size:
+                tiles.append((lap_var(t), t))
+    # 只在边缘最丰富的 8 块里找（天空、纯色墙这类平坦区域噪点多，会让指标失真）
+    tiles.sort(key=lambda x: -x[0])
+    vals = sorted(reblur(t) for e, t in tiles[:8] if e > 20)
+    if not vals:
+        return reblur(g)
+    return float(np.mean(vals[:2]))
+
+
+def signature(gray: np.ndarray) -> np.ndarray:
+    """32×24 归一化亮度缩略图：对曝光变化不敏感，用于判断是否同一场景。"""
+    h, w = gray.shape
+    sm = cv2.resize(gray, (32, 24) if w >= h else (24, 32), interpolation=cv2.INTER_AREA).astype(np.float32)
+    return ((sm - sm.mean()) / (sm.std() + 1e-6)).flatten()
+
+
+def similarity(a, b) -> float:
+    if a is None or b is None or a.shape != b.shape:
+        return -1.0
+    return float(np.dot(a, b) / len(a))
+
+
+def dhash(gray: np.ndarray) -> str:
+    small = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
+    bits = (small[:, 1:] > small[:, :-1]).flatten()
+    return "%016x" % int("".join("1" if b else "0" for b in bits), 2)
+
+
+def hamming(a: str, b: str) -> int:
+    return bin(int(a, 16) ^ int(b, 16)).count("1")
+
+
+def analyze(img: Image.Image, p: Photo) -> Image.Image:
+    """返回缩到 FOCUS_SIDE 的图，缩略图和发给 AI 的图都从它再缩，不必对全尺寸原图重复缩放。"""
+    focus = _fit(img, FOCUS_SIDE)
+    work = _fit(focus, WORK_SIDE)
+    p.width, p.height = img.info.get("full_size", img.size)
+    gray = cv2.cvtColor(np.asarray(work), cv2.COLOR_RGB2GRAY)
+    p.sharp_global = lap_var(gray)
+    p.sharp_subject = subject_sharpness(gray)
+    p.mean_luma = float(gray.mean())
+    p.clip_high = float((gray >= 250).mean())
+    p.clip_low = float((gray <= 5).mean())
+    p.dhash = dhash(gray)
+    SIGS[p.path] = signature(gray)
+    full = cv2.cvtColor(np.asarray(focus), cv2.COLOR_RGB2GRAY)
+    p.blur = round(focus_blur(full), 3)
+
+    # 人脸／眼睛（Haar：快但粗糙，只作参考）
+    det = gray
+    scale = 1.0
+    if max(gray.shape) > 1000:
+        scale = 1000 / max(gray.shape)
+        det = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    m = max(24, int(min(det.shape) * 0.06))
+    face_model, eye_model = _cascade("haarcascade_frontalface_default.xml"), _cascade("haarcascade_eye.xml")
+    if face_model is None:
+        return focus
+    faces = face_model.detectMultiScale(
+        cv2.equalizeHist(det), scaleFactor=1.1, minNeighbors=6, minSize=(m, m))
+    p.faces = len(faces)
+    face_sharp = []
+    for (x, y, w, h) in faces:
+        X, Y, W, H = (int(v / scale) for v in (x, y, w, h))
+        roi = gray[Y:Y + H, X:X + W]
+        if roi.size == 0:
+            continue
+        face_sharp.append(lap_var(roi))
+        upper = roi[: H * 6 // 10]
+        if W >= 90 and eye_model is not None:   # 脸太小时眼睛检测不可靠，不判断
+            eyes = eye_model.detectMultiScale(
+                upper, scaleFactor=1.1, minNeighbors=5, minSize=(max(8, W // 10), max(8, W // 10)))
+            if len(eyes) == 0:
+                p.eyes_missing += 1
+    if face_sharp:
+        p.sharp_face = float(max(face_sharp))
+    return focus
+
+
+# ───────────────────────── 分组与评分 ─────────────────────────
+
+def group_bursts(photos: list[Photo], burst_gap: float, scene_gap: float, sim: float):
+    """连拍：间隔短且画面相近；同场景重拍：间隔稍长但画面很像（适合旁轴、手动上弦等慢节奏拍摄）。"""
+    photos.sort(key=lambda x: (x.time, x.name))
+    gid, last = 0, None
+    for p in photos:
+        same = False
+        if last is not None:
+            dt = p.time - last.time
+            c = similarity(SIGS.get(p.path), SIGS.get(last.path))
+            same = (dt <= burst_gap and c >= sim - 0.15) or (dt <= scene_gap and c >= sim)
+        if not same:
+            gid += 1
+        p.group = gid
+        last = p
+    sizes = {}
+    for p in photos:
+        sizes[p.group] = sizes.get(p.group, 0) + 1
+    for p in photos:
+        p.group_size = sizes[p.group]
+
+
+def pct_rank(values: list[float], v: float) -> float:
+    if not values:
+        return 0.5
+    return sum(1 for x in values if x <= v) / len(values)
+
+
+def score_local(photos: list[Photo], args):
+    ok = [p for p in photos if not p.error]
+    focus_vals = [-p.blur for p in ok]
+    for p in ok:
+        flags = []
+        if p.blur >= args.blur_reject:
+            flags.append("失焦或模糊")
+        elif p.blur >= args.blur_warn:
+            flags.append("可能失焦／抖动")
+        if p.mean_luma < 18:
+            flags.append("严重欠曝")
+        elif p.mean_luma > 238:
+            flags.append("严重过曝")
+        if p.clip_high > args.clip_high:
+            flags.append(f"高光溢出 {p.clip_high:.0%}")
+        if p.clip_low > args.clip_low:
+            flags.append(f"暗部死黑 {p.clip_low:.0%}")
+        if p.eyes_missing:
+            flags.append("可能闭眼／侧脸")
+        p.flags = flags
+
+        sharp_part = pct_rank(focus_vals, -p.blur)                   # 0..1，本批中越锐越高
+        expo_part = 1 - min(1, abs(p.mean_luma - 118) / 118) * 0.6 - min(0.4, p.clip_high * 4) - min(0.3, max(0, p.clip_low - 0.05) * 2)
+        face_part = 1.0 if p.faces == 0 else (0.6 if p.eyes_missing else 1.0)
+        p.local_score = round(100 * (0.6 * sharp_part + 0.3 * max(0, expo_part) + 0.1 * face_part), 1)
+
+    # 连拍组内只保留最高分为“主选”，其余为“同组备选”
+    best = {}
+    for p in ok:
+        if p.group not in best or p.local_score > best[p.group].local_score:
+            best[p.group] = p
+    hard = {"失焦或模糊", "严重欠曝", "严重过曝"}
+    for p in ok:
+        p.group_best = best[p.group] is p
+        if any(f in hard for f in p.flags):
+            p.tier = "reject"
+        elif not p.group_best:
+            p.tier = "alt"
+        else:
+            p.tier = "candidate"
+    for p in photos:
+        if p.error:
+            p.tier = "error"
+
+
+# ───────────────────────── AI 细评（Claude／ChatGPT／Grok） ─────────────────────────
+
+PROVIDERS = {
+    "claude": {"name": "Claude", "env": "ANTHROPIC_API_KEY", "default": "claude-sonnet-5-5",
+               "models": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
+               "console": "console.anthropic.com"},
+    "openai": {"name": "ChatGPT", "env": "OPENAI_API_KEY", "default": "gpt-5.5", "base_url": None,
+               "models": ["gpt-5.5", "gpt-6-luna", "gpt-6-sol"], "console": "platform.openai.com"},
+    "grok": {"name": "Grok", "env": "XAI_API_KEY", "default": "grok-4.7", "base_url": "https://api.x.ai/v1",
+             "models": ["grok-4.7"], "console": "console.x.ai"},
+    "gemini": {"name": "Gemini", "env": "GEMINI_API_KEY", "alt_env": "GOOGLE_API_KEY", "default": "gemini-3.8-flash",
+               "models": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"], "console": "aistudio.google.com"},
+}
+GEMINI_BASE = os.environ.get("PHOTO_CULL_GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta")
+
+AI_PROMPT = """你是一位严格但公正的资深摄影编辑，正在帮摄影师从一批照片里挑选作品。
+请评价这张照片，题材可能是人像、扫街人文、风景建筑或活动连拍，先自行判断题材，再用该题材的标准评价。
+
+拍摄信息：{exif}
+本地技术检测：{flags}
+
+评分维度（1-10，整数）：
+- composition 构图与画面秩序
+- light 光线与色彩
+- subject 主体与表达（人像看神态表情，扫街看瞬间与故事，风景看主体与氛围）
+- moment 时机／决定性瞬间
+- technical 技术质量（对焦、曝光、噪点、水平）
+
+stars 给 1-5 星：5=作品级，4=精选，3=可用，2=一般，1=建议淘汰。
+只输出一个 JSON 对象，不要其他文字：
+{{"genre":"人像|扫街|风景|建筑|活动|其他","scores":{{"composition":0,"light":0,"subject":0,"moment":0,"technical":0}},"overall":0,"stars":0,"keep":true,"comment":"一句中文评语，指出最大优点","issues":["最多3条可改进点"]}}"""
+
+
+def _jpeg_b64(img: Image.Image, side: int) -> tuple[str, str]:
+    buf = io.BytesIO()
+    _fit(img, side).save(buf, "JPEG", quality=85)
+    data = buf.getvalue()
+    return base64.b64encode(data).decode(), hashlib.sha1(data).hexdigest()
+
+
+def _parse_json(text: str) -> dict:
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        raise ValueError("模型未返回 JSON")
+    d = json.loads(m.group(0))
+    stars = int(d.get("stars", 0))
+    if not 1 <= stars <= 5:
+        raise ValueError("stars 超出范围")
+    d["stars"] = stars
+    try:
+        d["overall"] = int(round(float(d.get("overall", 0))))
+    except (TypeError, ValueError):
+        d["overall"] = 0
+    return d
+
+
+def make_caller(provider: str, model: str):
+    """返回 call(b64_jpeg, prompt) -> 文本。三家统一接口。"""
+    info = PROVIDERS[provider]
+    key = API_KEYS.get(provider) or os.environ.get(info["env"], "") or os.environ.get(info.get("alt_env", ""), "")
+    if not key:
+        sys.exit(f"未设置 {info['env']}（{info['name']} 的 API Key）。见 README。")
+    if provider == "claude":
+        try:
+            import anthropic
+        except ImportError:
+            sys.exit("使用 Claude 需要：pip install anthropic")
+        client = anthropic.Anthropic(api_key=key, max_retries=4)
+
+        def call(b64, prompt):
+            msg = client.messages.create(model=model, max_tokens=800, messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                {"type": "text", "text": prompt}]}])
+            return "".join(getattr(b, "text", "") for b in msg.content)
+        return call
+    if provider == "gemini":
+        return _gemini_caller(key, model)
+    try:
+        from openai import OpenAI
+    except ImportError:
+        sys.exit(f"使用 {info['name']} 需要：pip install openai")
+    client = OpenAI(api_key=key, base_url=info.get("base_url"), max_retries=4)
+
+    def call(b64, prompt):
+        # OpenAI 与 xAI 都支持 Responses API；推理模型的思考也计入输出上限，所以给足余量
+        r = client.responses.create(model=model, store=False, max_output_tokens=4000, input=[{
+            "role": "user", "content": [
+                {"type": "input_image", "image_url": "data:image/jpeg;base64," + b64, "detail": "high"},
+                {"type": "input_text", "text": prompt}]}])
+        return r.output_text
+    return call
+
+
+def _gemini_caller(key: str, model: str):
+    """Gemini：直接调用 REST 接口 generateContent（无需额外安装 SDK）。"""
+    import urllib.error
+    import urllib.request
+
+    def post(url, body):
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+                                     headers={"Content-Type": "application/json", "x-goog-api-key": key})
+        delay = 2.0
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    return json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", errors="replace")[:300]
+                if e.code in (429, 500, 502, 503, 504) and attempt < 3:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise RuntimeError(f"Gemini HTTP {e.code}: {detail}") from None
+
+    def texts(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "text" and isinstance(v, str):
+                    yield v
+                else:
+                    yield from texts(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                yield from texts(v)
+
+    def call(b64, prompt):
+        body = {"contents": [{"role": "user", "parts": [
+                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}}, {"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 4096, "responseMimeType": "application/json"}}
+        res = post(f"{GEMINI_BASE}/models/{model}:generateContent", body)
+        cands = res.get("candidates") or []
+        if not cands:
+            reason = (res.get("promptFeedback") or {}).get("blockReason", "无候选结果")
+            raise RuntimeError(f"Gemini 未返回结果：{reason}")
+        return "".join(texts(cands[0].get("content", {})))
+    return call
+
+
+def ai_review(items: list[tuple[Photo, Image.Image]], args, cache: dict, cache_path: Path):
+    provider = args.provider
+    info = PROVIDERS[provider]
+    model = args.model or info["default"]
+    label = f"{info['name']}（{model}）"
+    jobs = []
+    for p, img in items:
+        b64, digest = _jpeg_b64(img, AI_SIDE)
+        key = f"{provider}:{model}:{digest}"
+        hit = cache.get(key) or (cache.get(f"{model}:{digest}") if provider == "claude" else None)
+        if hit:
+            p.ai = hit
+        else:
+            jobs.append((p, b64, key))
+    if not jobs:
+        print(f"AI 细评：{len(items)} 张全部命中缓存，不产生费用。")
+        return
+    call = make_caller(provider, model)
+    est_in = len(jobs) * 1500
+    est_out = len(jobs) * (250 if provider in ("claude", "gemini") else 800)
+    print(f"AI 细评：{len(jobs)} 张需要调用 {label}（另有 {len(items)-len(jobs)} 张命中缓存）。")
+    fm = lambda n: f"{n/1e6:.2f}M" if n >= 1e6 else f"{n/1e3:.0f}K"
+    print(f"  预计约 {fm(est_in)} 输入 token ＋ {fm(est_out)} 输出 token（粗估）。")
+    if not args.yes:
+        confirm = getattr(args, "confirm", None)
+        ok = confirm(len(jobs), est_in, est_out, label) if confirm else \
+            input("  继续调用 API？输入 y 确认：").strip().lower() == "y"
+        if not ok:
+            print("  已跳过细评。")
+            return
+
+    def run(job):
+        p, b64, key = job
+        exif = f"{p.camera} {p.lens} {p.exposure}".strip() or "未知"
+        flags = "、".join(p.flags) or "无明显问题"
+        d = _parse_json(call(b64, AI_PROMPT.format(exif=exif, flags=flags)))
+        d["provider"], d["model"] = info["name"], model
+        return p, key, d
+
+    def save():
+        cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    done = ok_count = 0
+    _report("ai", 0, len(jobs))
+    with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futs = [ex.submit(run, j) for j in jobs]
+        for fut in cf.as_completed(futs):
+            if CANCEL.is_set():
+                for f in futs:
+                    f.cancel()
+                save()
+                raise Cancelled()
+            done += 1
+            try:
+                p, key, d = fut.result()
+                p.ai = d
+                cache[key] = d
+                ok_count += 1
+            except Exception as e:  # 单张失败不影响整体
+                print(f"  细评失败：{type(e).__name__}: {e}")
+                if ok_count == 0 and done >= 3:   # 开头连续失败：多半是 Key、模型名或余额问题，及时止损
+                    for f in futs:
+                        f.cancel()
+                    save()
+                    print(f"  连续 {done} 张调用失败，已停止细评。请检查 {info['env']}、模型名称和账户余额。")
+                    return
+            _report("ai", done, len(jobs))
+            if done % 10 == 0 or done == len(jobs):
+                print(f"  {done}/{len(jobs)}")
+                save()
+
+
+# ───────────────────────── 星级与色标 ─────────────────────────
+
+def label_for(stars: int) -> str:
+    if stars < 0 or stars == 1:
+        return "Red"
+    if stars >= 4:
+        return "Green"
+    if stars == 3:
+        return "Yellow"
+    return ""
+
+
+def assign_ratings(photos: list[Photo]):
+    # 不开 AI 时只做技术判断：入围 3★、备选 2★、淘汰拒绝。4–5★ 只由审美细评给出。
+    for p in photos:
+        if p.manual:
+            continue
+        if p.tier == "reject":
+            p.stars = -1
+        elif p.tier == "error":
+            p.stars = 0
+        elif p.ai:
+            p.stars = min(p.ai["stars"], 2) if p.tier == "alt" else p.ai["stars"]
+        elif p.tier == "alt":
+            p.stars = 2
+        else:
+            p.stars = 3
+        p.label = label_for(p.stars) if p.tier != "error" else ""
+
+
+# ───────────────────────── XMP：边车文件 ─────────────────────────
+
+XMP_NS = "http://ns.adobe.com/xap/1.0/"
+XMP_CORE = """<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="photo-cull {ver}">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmp:Rating="{rating}"{label}/>
+ </rdf:RDF>
+</x:xmpmeta>"""
+XPACKET_BEGIN = '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+XPACKET_END = '<?xpacket end="w"?>'
+
+
+def _new_core(rating: int, label: str) -> str:
+    return XMP_CORE.format(ver=VERSION, rating=rating, label=f'\n    xmp:Label="{label}"' if label else "")
+
+
+def sidecar_path(photo_path: Path) -> Path:
+    # Lightroom 与 Capture One 默认都使用 “同名.xmp”；RAW＋JPEG 配对共用这一个
+    return photo_path.with_suffix(".xmp")
+
+
+def merge_xmp(text: str, rating: int, label: str) -> str:
+    """在已有 XMP 中只改 xmp:Rating / xmp:Label，其余内容（调色、关键词等）原样保留。"""
+    for tag in ("Rating", "Label"):
+        text = re.sub(rf"\s*<xmp:{tag}>.*?</xmp:{tag}>", "", text, flags=re.S)
+        text = re.sub(rf"\s*<xmp:{tag}\s*/>", "", text)
+    m = re.search(r"<rdf:Description\b[^>]*?/?>", text, re.S)
+    if not m:
+        raise ValueError("无法识别的 XMP 结构")
+    tag = m.group(0)
+    new = re.sub(r'\s+xmp:(Rating|Label)\s*=\s*"[^"]*"', "", tag)
+    if 'xmlns:xmp="' not in text:
+        new = new.replace("<rdf:Description", f'<rdf:Description xmlns:xmp="{XMP_NS}"', 1)
+    attrs = f' xmp:Rating="{rating}"' + (f' xmp:Label="{label}"' if label else "")
+    if new.endswith("/>"):
+        new = new[:-2].rstrip() + attrs + "/>"
+    else:
+        new = new[:-1].rstrip() + attrs + ">"
+    return text[:m.start()] + new + text[m.end():]
+
+
+def write_sidecar(path: Path, rating: int, label: str, dry: bool) -> str:
+    if path.exists():
+        old = path.read_text(encoding="utf-8", errors="strict")
+        content = merge_xmp(old, rating, label)
+        if content == old:
+            return "unchanged"
+        if not dry and "photo-cull" not in old:   # 只备份别的软件写的 XMP
+            bak = path.with_suffix(".xmp.cull-bak")
+            if not bak.exists():
+                shutil.copy2(path, bak)
+    else:
+        content = XPACKET_BEGIN + _new_core(rating, label) + "\n" + XPACKET_END + "\n"
+    if not dry:
+        tmp = path.with_suffix(".xmp.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+    return "written"
+
+
+# ───────────────────────── XMP：写入 JPEG 内嵌（只改元数据段） ─────────────────────────
+
+XMP_APP1_ID = b"http://ns.adobe.com/xap/1.0/\x00"
+XMP_PAD = 2048   # 新写入的 XMP 预留空白，以后改星级可原地覆盖、文件长度不变
+
+
+def jpeg_segments(data: bytes):
+    """解析 JPEG 头部各段，返回 ([(段起点, 内容起点, 段终点, 标记)], 图像数据 SOS 起点)。"""
+    if data[:2] != b"\xff\xd8":
+        raise ValueError("不是 JPEG 文件")
+    segs, i, n = [], 2, len(data)
+    while i < n:
+        if data[i] != 0xFF:
+            raise ValueError("JPEG 结构异常")
+        j = i + 1
+        while j < n and data[j] == 0xFF:
+            j += 1
+        if j >= n:
+            break
+        m = data[j]
+        if m == 0xDA:
+            return segs, i
+        if m == 0xD9:
+            break
+        if 0xD0 <= m <= 0xD7 or m == 0x01:
+            segs.append((i, j + 1, j + 1, m))
+            i = j + 1
+            continue
+        if j + 3 > n:
+            break
+        length = int.from_bytes(data[j + 1:j + 3], "big")
+        if length < 2 or j + 1 + length > n:
+            raise ValueError("JPEG 段长度异常")
+        segs.append((i, j + 3, j + 1 + length, m))
+        i = j + 1 + length
+    raise ValueError("JPEG 中找不到图像数据")
+
+
+def _packet(core: str, total: int | None) -> bytes | None:
+    """组装带 xpacket 包装和空白填充的 XMP；total 指定时必须正好凑到这个字节数。"""
+    core = core.strip()
+    if not core.startswith("<?xpacket begin"):
+        core = XPACKET_BEGIN + core
+    head = core.encode("utf-8") + b"\n"
+    tail = XPACKET_END.encode()
+    pad = XMP_PAD if total is None else total - len(head) - len(tail)
+    if pad < 0:
+        return None
+    filler = bytearray(b" " * pad)
+    for k in range(99, pad, 100):
+        filler[k] = 0x0A
+    return head + bytes(filler) + tail
+
+
+def jpeg_set_rating(path: Path, rating: int, label: str, dry: bool) -> str:
+    data = path.read_bytes()
+    segs, sos = jpeg_segments(data)
+    mpf_at = next((a for a, ps, b, m in segs if m == 0xE2 and data[ps:ps + 4] == b"MPF\x00"), None)
+    xmp = next(((a, ps, b) for a, ps, b, m in segs if m == 0xE1 and data[ps:ps + len(XMP_APP1_ID)] == XMP_APP1_ID), None)
+
+    if xmp:
+        a, ps, b = xmp
+        text = data[ps + len(XMP_APP1_ID):b].decode("utf-8", errors="strict")
+        core = re.sub(r"\s*<\?xpacket end=.*?\?>\s*$", "", text, flags=re.S)
+        merged = merge_xmp(core, rating, label)
+        if merged == core:
+            return "unchanged"
+        pkt = _packet(merged, b - ps - len(XMP_APP1_ID))            # 优先原地覆盖：长度不变
+        if pkt is not None:
+            out = data[:ps + len(XMP_APP1_ID)] + pkt + data[b:]
+        else:
+            # 需要变长：只有当 XMP 段位于 MPF（多图索引）之前才安全，否则会打乱机内大预览的偏移
+            if mpf_at is not None and mpf_at < a:
+                raise ValueError("JPEG 的 XMP 空间不足且位于 MPF 之后，为保护文件未写入")
+            pkt = _packet(merged, None)
+            out = data[:a] + _app1(pkt) + data[b:]
+    else:
+        pos = 2
+        for a, ps, b, m in segs:                                    # 放在 JFIF／Exif 之后
+            if m == 0xE0 or (m == 0xE1 and data[ps:ps + 6] == b"Exif\x00\x00"):
+                pos = b
+            else:
+                break
+        if mpf_at is not None:
+            pos = min(pos, mpf_at)                                  # 必须在 MPF 之前插入
+        out = data[:pos] + _app1(_packet(_new_core(rating, label), None)) + data[pos:]
+
+    # 校验：图像数据（SOS 之后的全部字节，含机内附带的预览图）必须逐字节不变
+    segs2, sos2 = jpeg_segments(out)
+    if out[sos2:] != data[sos:]:
+        raise ValueError("校验失败：图像数据发生变化，已放弃写入")
+    try:
+        with Image.open(io.BytesIO(out)) as im:
+            im.verify()
+    except Exception as e:
+        raise ValueError(f"校验失败：写入后无法解码（{e}），已放弃写入")
+    if not dry:
+        tmp = path.with_name(path.name + ".cull-tmp")
+        tmp.write_bytes(out)
+        try:
+            shutil.copymode(path, tmp)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    return "written"
+
+
+def _app1(packet: bytes) -> bytes:
+    payload = XMP_APP1_ID + packet
+    if len(payload) + 2 > 0xFFFF:
+        raise ValueError("XMP 过大，无法写入单个 JPEG 段")
+    return b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+
+
+def apply_marks(p: Photo, dry: bool, jpeg_embed: bool = True, xmp_all: bool = False) -> list[str]:
+    """把同一张照片的星级／色标同步写到配对的每个文件。返回写入了哪些。"""
+    files = [Path(m) for m in (p.members or [p.path])]
+    raws = [f for f in files if f.suffix.lower() in RAW_EXT]
+    jpgs = [f for f in files if f.suffix.lower() in JPEG_EXT]
+    others = [f for f in files if f not in raws and f not in jpgs]
+    done = []
+    if raws or (xmp_all and (others or (jpgs and not jpeg_embed))):
+        write_sidecar(sidecar_path(files[0]), p.stars, p.label, dry)
+        done.append("XMP")
+    if jpeg_embed:
+        for j in jpgs:
+            jpeg_set_rating(j, p.stars, p.label, dry)
+            done.append(j.suffix.upper().lstrip("."))
+    return done
+
+
+# ───────────────────────── 同步删除（移到废纸篓） ─────────────────────────
+
+def trash_photo(p: Photo, root: Path) -> list[str]:
+    """把配对的所有文件及其 XMP 一起移到废纸篓；没有 send2trash 时移到 照片文件夹/_待删除。"""
+    files = [Path(m) for m in (p.members or [p.path])]
+    side = sidecar_path(files[0])
+    targets = [f for f in files + [side, side.with_suffix(".xmp.cull-bak")] if f.exists()]
+    try:
+        from send2trash import send2trash
+    except ImportError:
+        send2trash = None
+    moved = []
+    for t in targets:
+        if send2trash:
+            send2trash(str(t))
+        else:
+            try:
+                rel = t.resolve().relative_to(root.resolve())
+            except ValueError:
+                rel = Path(t.name)
+            dest = root / TRASH_DIR / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(t), str(dest))
+        moved.append(t.name)
+    p.trashed = True
+    return moved
+
+
+# ───────────────────────── 整理输出（分文件夹＋重命名） ─────────────────────────
+
+ORG_MANIFEST = ".photo-cull-organize.json"     # 记录上次整理到哪里，重新整理时原地挪动而不是再复制一份
+KEEP_DIR, REJECT_DIR, RAW_DIR, JPEG_DIR = "保留", "淘汰", "RAW", "JPEG"
+
+
+def _safe(text: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\s]+', "-", (text or "").strip()).strip("-.")[:40]
+
+
+def org_name(p: Photo, f: Path, rename: bool) -> str:
+    """星级_机型_原文件名，例如 4_ILCE-1M2_DSC01234.ARW；淘汰为 X_，未评分为 0_。"""
+    model = _safe(p.camera)
+    name = f.name
+    if model:   # 已经整理过一次（移动模式再次整理）的文件，先去掉旧前缀，避免叠成 3_A_4_A_xxx
+        name = re.sub(rf"^(?:X|[0-5])_{re.escape(model)}_", "", name)
+    if not rename:
+        return name
+    star = "X" if p.stars < 0 else str(max(0, int(p.stars)))
+    return f"{star}_{model}_{name}" if model else f"{star}_{name}"
+
+
+def org_dest(p: Photo, f: Path, out_root: Path, by_result: bool, by_format: bool, rename: bool) -> Path:
+    d = out_root
+    if by_result:
+        d = d / (REJECT_DIR if p.stars < 0 else KEEP_DIR)
+    if by_format:
+        d = d / (RAW_DIR if f.suffix.lower() in RAW_EXT else JPEG_DIR)
+    return d / org_name(p, f, rename)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        sa, sb = a.stat(), b.stat()
+        return sa.st_size == sb.st_size and int(sa.st_mtime) == int(sb.st_mtime)
+    except OSError:
+        return False
+
+
+def organize(photos: list[Photo], out_root, by_result=True, by_format=True, rename=True, move=False,
+             dry=False) -> dict:
+    """把评分后的照片整理到输出文件夹。
+    复制：原文件不动；再次整理时，上一次的副本按新星级换位置／换名字，不会多出一份。
+    移动：原文件夹里就没有了，结果里的路径同步更新，之后在报告里改星级、删除仍然有效。
+    配对的 RAW／JPEG 一起处理并共用同一个防重名后缀；边车 XMP 跟着 RAW 走、一起改名。"""
+    out_root = Path(out_root).expanduser().resolve()
+    man_path = out_root / ORG_MANIFEST
+    try:
+        manifest = json.loads(man_path.read_text(encoding="utf-8"))
+    except Exception:
+        manifest = {}
+    stats = {"out": str(out_root), "photos": 0, "files": 0, "kept": 0, "rejected": 0, "skipped": 0,
+             "mode": "move" if move else "copy", "dry_run": dry, "plan": [], "errors": [],
+             "by_result": bool(by_result), "by_format": bool(by_format), "rename": bool(rename)}
+    taken: set = set()
+    for p in photos:
+        if p.trashed or p.tier == "error":
+            stats["skipped"] += 1
+            continue
+        files = [Path(m).resolve() for m in (p.members or [p.path])]
+        side_owner = next((f for f in files if f.suffix.lower() in RAW_EXT), files[0])
+        mine = {str(f): Path(manifest[str(f)]) for f in files if not move and str(f) in manifest}
+        base = {f: org_dest(p, f, out_root, by_result, by_format, rename) for f in files}
+
+        def free(d: Path, f: Path) -> bool:
+            if str(d) in taken:
+                return False
+            return d == f or not d.exists() or (not move and mine.get(str(f)) == d)
+
+        dests, n = dict(base), 2
+        while not all(free(d, f) for f, d in dests.items()):
+            dests = {f: d.with_name(f"{d.stem}-{n}{d.suffix}") for f, d in base.items()}
+            n += 1
+        taken.update(str(d) for d in dests.values())
+
+        new_members = [str(f) for f in files]
+        for i, f in enumerate(files):
+            dest = dests[f]
+            side = sidecar_path(f) if f == side_owner else None
+            dside = dest.with_suffix(".xmp")
+            if dest == f:          # 输出文件夹就是原位置且名字不变
+                continue
+            prev = mine.get(str(f))
+            if not move and prev == dest and _same_file(f, dest):
+                if side is not None and side.exists() and not dry:   # 星级没变，只刷新一下 XMP
+                    shutil.copy2(side, dside)
+                continue
+            stats["plan"].append([str(f), str(dest)])
+            if dry:
+                stats["files"] += 1
+                continue
+            try:
+                _org_file(f, dest, side, dside, prev, move, out_root)
+            except Exception as e:      # 单个文件出错（被占用、磁盘满等）不影响其余照片
+                stats["errors"].append(f"{f.name}：{e}")
+                continue
+            stats["files"] += 1
+            if move:
+                new_members[i] = str(dest)
+            manifest[str(f)] = str(dest)
+        if move and not dry:
+            p.members = new_members
+            p.path = new_members[0]
+        stats["photos"] += 1
+        stats["rejected" if p.stars < 0 else "kept"] += 1
+    if not dry and (manifest or man_path.exists()):
+        out_root.mkdir(parents=True, exist_ok=True)
+        man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    return stats
+
+
+def org_count(photos: list[Photo], org: dict):
+    live = [p for p in photos if not p.trashed and p.tier != "error"]
+    org["photos"] = len(live)
+    org["rejected"] = sum(1 for p in live if p.stars < 0)
+    org["kept"] = org["photos"] - org["rejected"]
+
+
+def org_resync(p: Photo, photos: list[Photo], meta: dict) -> dict | None:
+    """报告里改了星级后，按上次的整理设置把这张照片在输出文件夹里换到新位置／新名字。"""
+    org = meta.get("organized")
+    if not org or org.get("dry_run") or p.trashed:
+        return None
+    st = organize([p], org["out"], org.get("by_result", True), org.get("by_format", True),
+                  org.get("rename", True), org.get("mode") == "move")
+    org_count(photos, org)
+    return st
+
+
+def org_trash_copies(p: Photo, meta: dict) -> list[str]:
+    """复制模式下删除照片时，输出文件夹里的那份副本也一起删。"""
+    org = meta.get("organized")
+    if not org or org.get("mode") != "copy" or org.get("dry_run"):
+        return []
+    out_root = Path(org["out"])
+    man_path = out_root / ORG_MANIFEST
+    try:
+        manifest = json.loads(man_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    copies = [manifest.pop(str(Path(m).resolve()), None) for m in (p.members or [p.path])]
+    copies = [c for c in copies if c and Path(c).exists() and out_root in Path(c).parents]
+    if not copies:
+        return []
+    copies.sort(key=lambda c: Path(c).suffix.lower() not in RAW_EXT)   # RAW 在前，边车 XMP 跟着它
+    import dataclasses
+    moved = trash_photo(dataclasses.replace(p, members=copies, path=copies[0], trashed=False), out_root)
+    man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    return moved
+
+
+def _org_file(f: Path, dest: Path, side, dside: Path, prev, move: bool, out_root: Path):
+    if not f.exists():
+        raise RuntimeError("找不到文件")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if move:
+        shutil.move(str(f), str(dest))
+        if side is not None and side.exists():
+            shutil.move(str(side), str(dside))
+            bak = side.with_suffix(".xmp.cull-bak")
+            if bak.exists():
+                shutil.move(str(bak), str(dest.with_suffix(".xmp.cull-bak")))
+    else:
+        if prev and prev != dest and prev.exists() and out_root in prev.parents:
+            prev.unlink()                       # 上次整理出的旧副本（只删输出文件夹里自己放的）
+            if side is not None and prev.with_suffix(".xmp").exists():
+                prev.with_suffix(".xmp").unlink()
+        shutil.copy2(str(f), str(dest))
+        if side is not None and side.exists():
+            shutil.copy2(str(side), str(dside))
+
+
+# ───────────────────────── 报告与结果文件 ─────────────────────────
+
+TIER_TEXT = {"candidate": "入围", "alt": "连拍备选", "reject": "淘汰", "error": "读取失败"}
+PHOTO_FIELDS = set(Photo.__dataclass_fields__)
+
+
+def load_results(out: Path) -> tuple[list[Photo], dict]:
+    rows = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    photos = [Photo(**{k: v for k, v in r.items() if k in PHOTO_FIELDS}) for r in rows]
+    meta_path = out / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    return photos, meta
+
+
+def summarize(photos: list[Photo], out: Path, meta: dict) -> dict:
+    live = [p for p in photos if not p.trashed]
+    c = {}
+    for p in live:
+        c[p.tier] = c.get(p.tier, 0) + 1
+    return {"out": str(out), "report": str(out / "report.html"), "total": len(live),
+            "candidate": c.get("candidate", 0), "alt": c.get("alt", 0), "reject": c.get("reject", 0),
+            "error": c.get("error", 0), "top": sum(1 for p in live if p.stars >= 4),
+            "pairs": sum(1 for p in live if len(p.members) > 1),
+            "trashed": sum(1 for p in photos if p.trashed),
+            "xmp": meta.get("xmp", 0), "dry_run": meta.get("dry_run", False),
+            "organized": {k: v for k, v in (meta.get("organized") or {}).items() if k != "plan"} or None}
+
+
+def write_report(photos: list[Photo], out: Path, meta: dict):
+    rows = []
+    for p in photos:
+        d = asdict(p)
+        d["tier_text"] = TIER_TEXT.get(p.tier, p.tier)
+        rows.append(d)
+    tmp = out / "results.json.tmp"
+    tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(out / "results.json")
+    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    with open(out / "results.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["文件", "配对文件", "结果", "星级", "色标", "本地分", "AI", "AI总分", "模糊度", "人脸", "连拍组",
+                    "问题", "AI评语", "已删除"])
+        for p in photos:
+            a = p.ai or {}
+            w.writerow([p.name, " + ".join(Path(m).name for m in p.members), TIER_TEXT.get(p.tier, p.tier),
+                        p.stars, p.label, p.local_score, a.get("provider", ""), a.get("overall", ""), p.blur,
+                        p.faces, f"{p.group}/{p.group_size}", "；".join(p.flags), a.get("comment", ""),
+                        "是" if p.trashed else ""])
+    data = json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")
+    page = REPORT_HTML.replace("__DATA__", data).replace("__SRC__", html.escape(meta.get("src", ""))) \
+        .replace("__WHEN__", datetime.now().strftime("%Y-%m-%d %H:%M")).replace("__VER__", VERSION)
+    (out / "report.html").write_text(page, encoding="utf-8")
+
+
+REPORT_HTML = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>照片筛选报告</title>
+<style>
+:root{--bg:#f6f5f2;--fg:#1d1d1b;--mut:#6b6a66;--card:#fff;--line:#e3e1dc;--g:#2f8a4c;--y:#b8860b;--r:#c0392b;--acc:#1d1d1b;--sel:#3b6fd8}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ecebe7;--mut:#9a9893;--card:#21211f;--line:#34332f;--acc:#ecebe7}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"PingFang SC","Helvetica Neue","Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif}
+header{padding:20px 16px 8px;max-width:1500px;margin:auto}h1{font-size:20px;margin:0 0 4px}.mut{color:var(--mut);font-size:12px}
+.bar{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px}
+.bar .in{max-width:1500px;margin:auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,select{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:4px 12px;cursor:pointer}
+button.on{background:var(--acc);color:var(--bg);border-color:var(--acc)}button:disabled{opacity:.4;cursor:default}
+button.danger{color:var(--r);border-color:var(--r)}.sp{flex:1}
+.stats{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}.stats b{font-size:18px;display:block}
+main{max-width:1500px;margin:auto;padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.c{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+.c.sel{outline:3px solid var(--sel);outline-offset:-1px}
+.c img{width:100%;aspect-ratio:3/2;object-fit:contain;background:#0001;cursor:zoom-in;display:block}
+.pick{position:absolute;top:8px;left:8px;width:22px;height:22px;accent-color:var(--sel);cursor:pointer}
+.ed{position:absolute;top:6px;right:6px;font-size:12px;padding:2px 10px;background:#000a;color:#fff;border-color:#fff6}
+.b{padding:8px 10px;display:flex;flex-direction:column;gap:3px}.row{display:flex;justify-content:space-between;gap:6px;align-items:center}
+.n{font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.st{letter-spacing:1px;white-space:nowrap}
+.tag{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.pair{font-size:10px;padding:0 5px;border-radius:4px;background:var(--line);color:var(--mut);margin-left:4px;font-weight:600}
+.t-candidate{color:var(--g);border-color:var(--g)}.t-alt{color:var(--y);border-color:var(--y)}.t-reject,.t-error{color:var(--r);border-color:var(--r)}
+.fl{font-size:11px;color:var(--r)}.cm{font-size:12px}.lb{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px}
+.rate{display:flex;gap:2px}.rate button{border:0;background:none;padding:0 2px;font-size:16px;line-height:1;border-radius:4px;color:var(--mut)}
+.rate button.on{color:var(--y);background:none}.rate button.x.on{color:var(--r)}.rate button:hover{background:var(--line)}
+#zoom{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:9;padding:16px}#zoom img{max-width:100%;max-height:100%}
+.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;z-index:10;padding:16px}
+.modal.show{display:flex}.dlg{background:var(--card);border-radius:14px;padding:20px;max-width:440px;width:100%}
+.dlg h3{margin:0 0 8px}.dlg p{margin:6px 0;color:var(--mut)}.dlg .row{justify-content:flex-end;margin-top:16px}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--acc);color:var(--bg);padding:8px 14px;border-radius:999px;font-size:13px;display:none;z-index:11}
+</style></head><body>
+<header><h1>照片筛选报告</h1><div class="mut">来源：__SRC__ · 生成：__WHEN__ · photo-cull __VER__ · <span id="modeNote"></span></div>
+<div class="stats" id="stats"></div></header>
+<div class="bar"><div class="in" id="filters"></div></div>
+<main id="grid"></main><div id="zoom" onclick="this.style.display='none'"><img></div>
+<div class="modal" id="modal"><div class="dlg"><h3 id="mT"></h3><div id="mB"></div>
+<div class="row"><button onclick="closeM()">取消</button><button class="danger" id="mGo">移到废纸篓</button></div></div></div>
+<div class="toast" id="toast"></div>
+<script>
+let D=__DATA__;const T={candidate:"入围",alt:"连拍备选",reject:"淘汰",error:"读取失败"};
+const LC={Green:"var(--g)",Yellow:"var(--y)",Red:"var(--r)"};let f="all",sort="score";const SEL=new Set();
+const m=location.pathname.match(/^\/out\/([^/]+)\//);const TOKEN=m?m[1]:null;const EDIT=!!TOKEN;
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ext=p=>p.split(".").pop().toUpperCase();
+function api(path,body){return fetch(path,{method:"POST",headers:{"X-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify(body)}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j})}
+function toast(t){const e=document.getElementById("toast");e.textContent=t;e.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display="none",2600)}
+function stars(n){return n<0?"✕ 拒绝":n?"★".repeat(n)+"☆".repeat(5-n):"—"}
+function score(p){return p.ai?p.ai.overall*10:p.local_score}
+const live=()=>D.filter(p=>!p.trashed);
+function stats(){const L=live(),c={};L.forEach(p=>c[p.tier]=(c[p.tier]||0)+1);const tr=D.length-L.length;
+document.getElementById("stats").innerHTML=[["总数",L.length],["RAW+JPEG 配对",L.filter(p=>p.members.length>1).length],["4★以上",L.filter(p=>p.stars>=4).length],["入围",c.candidate||0],["连拍备选",c.alt||0],["淘汰",c.reject||0]].concat(tr?[["已删除",tr]]:[])
+.map(([k,v])=>`<div><b>${v}</b><span class="mut">${k}</span></div>`).join("");
+document.getElementById("modeNote").textContent=EDIT?"可直接改星级、勾选删除；改动会同步写入配对的 RAW 和 JPEG":"星级／色标已写入 XMP，可在 Lightroom／Capture One 中复核"}
+function filters(){const opts=[["all","全部"],["g4","4★以上"],["candidate","入围"],["alt","连拍备选"],["reject","淘汰"],["pair","配对"],["face","有人脸"]];
+let h=opts.map(([k,v])=>`<button class="${f==k?"on":""}" onclick="f='${k}';render()">${v}</button>`).join("")+
+`<select onchange="sort=this.value;render()"><option value="score"${sort=="score"?" selected":""}>按评分</option><option value="time"${sort=="time"?" selected":""}>按时间</option><option value="group"${sort=="group"?" selected":""}>按连拍组</option></select>`;
+if(EDIT){const rj=live().filter(p=>p.tier=="reject"||p.stars<0).length;h+=`<span class="sp"></span><button onclick="SEL.clear();render()" ${SEL.size?"":"disabled"}>清除选择</button><button class="danger" onclick="askTrash([...SEL])" ${SEL.size?"":"disabled"}>删除所选（${SEL.size}）</button><button class="danger" onclick="askTrash(live().filter(p=>p.tier=='reject'||p.stars<0).map(p=>p.path))" ${rj?"":"disabled"}>删除全部淘汰（${rj}）</button>`}
+document.getElementById("filters").innerHTML=h}
+let CUR=[];
+function rateUI(p,i){if(!EDIT)return `<span class="st">${stars(p.stars)}</span>`;
+return `<span class="rate">${[1,2,3,4,5].map(n=>`<button class="${p.stars>=n?"on":""}" title="${n} 星" onclick="mark(CUR[${i}].path,${n})">★</button>`).join("")}<button class="x ${p.stars<0?"on":""}" title="拒绝" onclick="mark(CUR[${i}].path,-1)">✕</button></span>`}
+function openEdit(path){window.open(`/open/edit?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(path)}`,"_blank","noopener")}
+function render(){filters();let L=live().filter(p=>f=="all"||(f=="g4"?p.stars>=4:f=="face"?p.faces>0:f=="pair"?p.members.length>1:p.tier==f));
+L.sort(sort=="time"?(a,b)=>a.time-b.time:sort=="group"?(a,b)=>a.group-b.group||score(b)-score(a):(a,b)=>score(b)-score(a));CUR=L;
+document.getElementById("grid").innerHTML=L.map((p,i)=>{const a=p.ai||{};const exts=p.members.length>1?p.members.map(ext).join("+"):"";
+return `<div class="c${SEL.has(p.path)?" sel":""}">${EDIT?`<input type="checkbox" class="pick" ${SEL.has(p.path)?"checked":""} onchange="pick(CUR[${i}].path,this.checked)" title="选择以删除"><button class="ed" onclick="openEdit(CUR[${i}].path)" title="在照片编辑程序中打开（新标签页）">编辑</button>`:""}<img loading="lazy" src="${esc(p.thumb)}" alt="${esc(p.name)}" onclick="z(this.src)">
+<div class="b"><div class="row"><span class="n" title="${esc(p.members.join("\n")||p.path)}">${p.label?`<span class="lb" style="background:${LC[p.label]}"></span>`:""}${esc(p.name.replace(/\.[^.]+$/,""))}${exts?`<span class="pair">${exts}</span>`:`<span class="pair">${ext(p.name)}</span>`}</span><span class="tag t-${p.tier}">${T[p.tier]||p.tier}</span></div>
+<div class="row">${rateUI(p,i)}<span class="mut">${a.overall?esc(a.provider||"AI")+" "+a.overall+"/10 · ":""}本地 ${p.local_score}${p.manual?" · 已手动调整":""}</span></div>
+<div class="mut">${esc(p.exposure)}${p.group_size>1?` · 连拍组 ${p.group}（${p.group_size} 张${p.group_best?"，组内最佳":""}）`:""}</div>
+${p.flags.length?`<div class="fl">${p.flags.map(esc).join("、")}</div>`:""}
+${a.comment?`<div class="cm">${esc(a.genre?"["+a.genre+"] ":"")}${esc(a.comment)}</div>`:""}
+${a.issues&&a.issues.length?`<div class="mut">改进：${a.issues.map(esc).join("；")}</div>`:""}${p.error?`<div class="fl">${esc(p.error)}</div>`:""}</div></div>`}).join("");stats()}
+function z(s){const e=document.getElementById("zoom");e.querySelector("img").src=s;e.style.display="flex"}
+function pick(path,on){on?SEL.add(path):SEL.delete(path);render()}
+async function mark(path,n){const p=D.find(x=>x.path==path);const v=(p.stars==n&&n>0)?n-1:n;
+try{const r=await api("/api/mark",{path,stars:v});Object.assign(p,r.photo);render();up(r.summary);toast(`已同步写入：${r.written.join("、")||"无变化"}`+(r.organized?"；输出文件夹已同步":""))}catch(e){toast("写入失败："+e.message)}}
+function up(s){if(window.parent!==window)window.parent.postMessage({pc:"summary",s},location.origin)}
+function closeM(){document.getElementById("modal").classList.remove("show")}
+function askTrash(paths){if(!paths.length)return;const ps=D.filter(p=>paths.includes(p.path));const files=ps.reduce((n,p)=>n+Math.max(1,p.members.length),0);
+document.getElementById("mT").textContent=`删除 ${ps.length} 张照片？`;
+document.getElementById("mB").innerHTML=`<p>共 ${files} 个文件（含配对的 RAW／JPEG）及对应 XMP，会移到<b>废纸篓</b>，可在废纸篓里恢复。</p><p>如果这些照片已导入 Lightroom／Capture One，目录里会显示为“找不到文件”，请在软件里一并移除。</p>`;
+document.getElementById("mGo").onclick=async()=>{closeM();try{const r=await api("/api/trash",{paths});r.trashed.forEach(x=>{const p=D.find(y=>y.path==x);if(p)p.trashed=true;SEL.delete(x)});render();up(r.summary);toast(`已移到${r.where}：${r.files} 个文件`)}catch(e){toast("删除失败："+e.message)}};
+document.getElementById("modal").classList.add("show")}
+render();
+</script></body></html>"""
+
+
+# ───────────────────────── 主流程 ─────────────────────────
+
+def collect(src: Path, recursive: bool) -> list[list[Path]]:
+    """按 同一文件夹＋同名（不分大小写）分组：RAW 与 JPEG／HIF 自动配对。"""
+    it = src.rglob("*") if recursive else src.iterdir()
+    groups: dict = {}
+    org_roots = {m.parent for m in src.rglob(ORG_MANIFEST) if m.parent != src} if recursive else set()
+    for f in it:
+        if (not f.is_file() or f.name.startswith(".") or f.suffix.lower() not in RAW_EXT | IMG_EXT
+                or "photo-cull-report" in f.parts or TRASH_DIR in f.parts
+                or any(r in f.parents for r in org_roots)):
+            continue
+        groups.setdefault((str(f.parent), f.stem.lower()), []).append(f)
+    order = lambda f: (0 if f.suffix.lower() in RAW_EXT else 1 if f.suffix.lower() in JPEG_EXT else 2, f.name)
+    return [sorted(g, key=order) for _, g in sorted(groups.items())]
+
+
+def process_one(members: list[Path], thumbs: Path, keep_preview: bool):
+    primary = members[0]
+    p = Photo(path=str(primary), name=primary.name, kind="raw" if primary.suffix.lower() in RAW_EXT else "image",
+              members=[str(m) for m in members])
+    # 分析优先用相机直出 JPEG（全尺寸、颜色即机内效果）；失败再用 RAW 内嵌预览
+    candidates = [m for m in members if m.suffix.lower() in JPEG_EXT] + [m for m in members if m.suffix.lower() not in JPEG_EXT]
+    img, errors = None, []
+    for src in candidates:
+        try:
+            e = read_exif(src)
+            img = load_preview(src)       # 评分按全尺寸解码（模糊阈值据此调定），之后只缩放一次
+            p.source = str(src)
+            break
+        except Exception as ex:
+            errors.append(f"{src.name}: {type(ex).__name__}: {ex}")
+    try:
+        if img is None:
+            raise RuntimeError("；".join(errors) or "无法读取")
+        if not e.get("dt") and p.kind == "raw":
+            e = {**read_exif(primary), **{k: v for k, v in e.items() if v}}
+        p.time = capture_time(e, primary)
+        p.time_text = datetime.fromtimestamp(p.time).strftime("%Y-%m-%d %H:%M:%S")
+        p.camera, p.lens, p.exposure = e.get("model", ""), e.get("lens", ""), exposure_text(e)
+        img = analyze(img, p)          # 换成 2400 的那张，后面的缩略图、AI 用图都从它缩
+        tname = hashlib.sha1(str(primary).encode()).hexdigest()[:16] + ".jpg"
+        _fit(img, THUMB_SIDE).save(thumbs / tname, "JPEG", quality=82)
+        p.thumb = "thumbs/" + tname
+    except Exception as ex:
+        p.error = f"{type(ex).__name__}: {ex}"
+        img = None
+    return p, (_fit(img, AI_SIDE) if (img is not None and keep_preview) else None)
+
+
+def main(argv=None, confirm=None):
+    ap = argparse.ArgumentParser(prog="cull.py", description="照片筛选：本地技术评分＋可选 AI 细评，RAW＋JPEG 同步标记，输出 XMP 和网页报告。")
+    ap.add_argument("folder", type=Path, help="照片文件夹")
+    ap.add_argument("-r", "--recursive", action="store_true", help="包含子文件夹")
+    ap.add_argument("-o", "--out", type=Path, help="报告输出目录（默认：照片文件夹/photo-cull-report）")
+    ap.add_argument("--ai", action="store_true", help="对入围照片调用 AI 细评")
+    ap.add_argument("--provider", choices=list(PROVIDERS), default="claude", help="细评用哪家：claude／openai（ChatGPT）／grok／gemini")
+    ap.add_argument("--model", help="细评模型（默认：claude-sonnet-5-5／gpt-5.5／grok-4.7／gemini-3.8-flash）")
+    ap.add_argument("--ai-alts", action="store_true", help="连拍备选也送去细评（更贵）")
+    ap.add_argument("--yes", action="store_true", help="不再询问，直接调用 API／执行删除")
+    ap.add_argument("--no-xmp", action="store_true", help="只出报告，不写任何星级")
+    ap.add_argument("--no-jpeg-embed", action="store_true", help="不把星级写进 JPEG 文件内嵌 XMP")
+    ap.add_argument("--xmp-all", action="store_true", help="没有 RAW 的 JPEG／HEIC 也写边车 XMP（Capture One 会读）")
+    ap.add_argument("--dry-run", action="store_true", help="演练：不写任何 XMP，只生成报告")
+    ap.add_argument("--trash-rejects", action="store_true", help="把淘汰的照片（含配对文件）移到废纸篓")
+    ap.add_argument("--organize", metavar="DIR", nargs="?", const="", help="评分后整理到输出文件夹（不写路径时为 照片文件夹/整理输出）")
+    ap.add_argument("--by-result", action="store_true", help="整理时按 保留／淘汰 分文件夹")
+    ap.add_argument("--by-format", action="store_true", help="整理时按 JPEG／RAW 分文件夹")
+    ap.add_argument("--rename", action="store_true", help="整理时重命名为 星级_机型_原文件名（只改输出里的文件）")
+    ap.add_argument("--move", action="store_true", help="整理时移动而不是复制（原文件夹里就没有了）")
+    ap.add_argument("--burst-gap", type=float, default=15, help="连拍：间隔不超过几秒且画面相近（默认 15）")
+    ap.add_argument("--scene-gap", type=float, default=60, help="同场景重拍：间隔不超过几秒且画面很像（默认 60）")
+    ap.add_argument("--similarity", type=float, default=0.6, help="同场景相似度阈值 0–1，越大越严格（默认 0.6）")
+    ap.add_argument("--blur-warn", type=float, default=0.58, help="模糊度超过此值提示“可能失焦／抖动”（默认 0.58）")
+    ap.add_argument("--blur-reject", type=float, default=0.75, help="模糊度超过此值直接淘汰（默认 0.75）")
+    ap.add_argument("--clip-high", type=float, default=0.04, help="高光溢出提示阈值（默认 4%%）")
+    ap.add_argument("--clip-low", type=float, default=0.30, help="暗部死黑提示阈值（默认 30%%）")
+    ap.add_argument("--workers", type=int, default=4, help="并行数（默认 4）")
+    ap.add_argument("--version", action="version", version=VERSION)
+    args = ap.parse_args(argv)
+    args.confirm = confirm
+    jpeg_embed = not args.no_jpeg_embed
+
+    src = args.folder.expanduser().resolve()
+    if not src.is_dir():
+        sys.exit(f"找不到文件夹：{src}")
+    out = (args.out.expanduser().resolve() if args.out else src / "photo-cull-report")
+    thumbs = out / "thumbs"
+    thumbs.mkdir(parents=True, exist_ok=True)
+
+    groups = collect(src, args.recursive)
+    if not groups:
+        sys.exit("文件夹里没有支持的照片。")
+    npairs = sum(1 for g in groups if len(g) > 1)
+    print(f"共 {len(groups)} 张照片（{sum(len(g) for g in groups)} 个文件，其中 {npairs} 组 RAW＋JPEG 配对），开始本地分析…")
+    t0 = time.time()
+    photos, previews = [], {}
+    _report("analyze", 0, len(groups))
+    with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futs = [ex.submit(process_one, g, thumbs, args.ai) for g in groups]
+        for i, fut in enumerate(cf.as_completed(futs), 1):
+            if CANCEL.is_set():
+                for f in futs:
+                    f.cancel()
+                raise Cancelled()
+            p, prev = fut.result()
+            _report("analyze", i, len(groups))
+            photos.append(p)
+            if prev is not None:
+                previews[p.path] = prev
+            if i % 20 == 0 or i == len(groups):
+                print(f"  {i}/{len(groups)}")
+    group_bursts([p for p in photos if not p.error], args.burst_gap, args.scene_gap, args.similarity)
+    score_local(photos, args)
+    print(f"本地分析完成，用时 {time.time()-t0:.0f} 秒。")
+
+    if args.ai:
+        tiers = {"candidate", "alt"} if args.ai_alts else {"candidate"}
+        items = [(p, previews[p.path]) for p in photos if p.tier in tiers and p.path in previews]
+        cache_path = out / "ai_cache.json"
+        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+        ai_review(items, args, cache, cache_path)
+        cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    previews.clear()
+    SIGS.clear()
+
+    # 重新筛选同一文件夹时，保留上次在报告里手动调整过的星级
+    prev_org = None
+    if (out / "results.json").is_file():
+        try:
+            prev, prev_meta = load_results(out)
+            prev_org = (prev_meta or {}).get("organized")
+            manual = {q.path: q for q in prev if q.manual and not q.trashed}
+            for p in photos:
+                q = manual.get(p.path)
+                if q:
+                    p.stars, p.label, p.manual = q.stars, q.label, True
+            if manual:
+                print(f"保留了上次手动调整的 {sum(1 for p in photos if p.manual)} 张照片的星级。")
+        except Exception:
+            pass
+    assign_ratings(photos)
+    photos.sort(key=lambda p: (p.time, p.name))
+
+    written = 0
+    _report("xmp", 0, 1)
+    if not args.no_xmp:
+        for p in photos:
+            if p.tier == "error":
+                continue
+            try:
+                if apply_marks(p, args.dry_run, jpeg_embed, args.xmp_all):
+                    written += 1
+            except Exception as ex:
+                p.flags.append(f"星级未写入：{ex}")
+
+    trashed_files = 0
+    if args.trash_rejects and not args.dry_run:
+        rejects = [p for p in photos if p.tier == "reject"]
+        if rejects and (args.yes or input(f"将把 {len(rejects)} 张淘汰照片（含配对文件）移到废纸篓，输入 y 确认：").strip().lower() == "y"):
+            for p in rejects:
+                trashed_files += len(trash_photo(p, src))
+
+    organized = None
+    if args.organize is None and prev_org and not prev_org.get("dry_run") and Path(prev_org.get("out", "")).is_dir():
+        # 这次没勾整理：沿用上次的整理记录，之后在报告里改星级、删除仍会同步到输出文件夹
+        organized = {k: v for k, v in prev_org.items() if k != "plan"}
+        print(f"输出文件夹 {organized['out']} 保持上次整理时的状态；需要按新星级重新整理时，勾选「整理输出」或在报告页点「按当前星级整理」。")
+    if args.organize is not None:
+        target = Path(args.organize).expanduser() if args.organize else src / "整理输出"
+        if not target.is_absolute():
+            target = src / target
+        organized = organize(photos, target, args.by_result, args.by_format, args.rename, args.move, args.dry_run)
+        verb = "移动" if args.move else "复制"
+        if args.dry_run:
+            print(f"演练模式：本应把 {organized['photos']} 张照片（{len(organized['plan'])} 个文件）{verb}到 {target}，实际未执行。")
+        else:
+            print(f"已{verb} {organized['photos']} 张照片（{organized['files']} 个文件）到 {target}：保留 {organized['kept']}，淘汰 {organized['rejected']}。")
+        for e in organized["errors"][:10]:
+            print("  整理失败：" + e)
+
+    meta = {"src": str(src), "version": VERSION, "dry_run": args.dry_run, "no_xmp": args.no_xmp,
+            "jpeg_embed": jpeg_embed, "xmp_all": args.xmp_all, "xmp": 0 if (args.no_xmp or args.dry_run) else written,
+            "organized": organized}
+    write_report(photos, out, meta)
+    res = summarize(photos, out, meta)
+
+    print("\n结果：入围 {candidate}，连拍备选 {alt}，淘汰 {reject}，读取失败 {error}；4★以上 {top} 张；RAW＋JPEG 配对 {pairs} 组。".format(**res))
+    if args.no_xmp:
+        print("未写星级（--no-xmp）。")
+    elif args.dry_run:
+        print(f"演练模式：本应为 {written} 张照片写入星级，实际未写。")
+    else:
+        print(f"已为 {written} 张照片同步写入星级（RAW→XMP 边车{'，JPEG→内嵌 XMP' if jpeg_embed else ''}）。")
+    if trashed_files:
+        print(f"已把 {trashed_files} 个文件移到废纸篓。")
+    print(f"报告：{out / 'report.html'}")
+    _report("done", 1, 1)
+    return res
+
+
+if __name__ == "__main__":
+    main()

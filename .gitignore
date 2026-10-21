@@ -1,0 +1,8 @@
+.venv/
+.venv-win/
+__pycache__/
+*.pyc
+dist/
+.DS_Store
+*.log
+lut-aliases.json

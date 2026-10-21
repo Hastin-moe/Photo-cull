@@ -1,0 +1,10 @@
+numpy>=1.24
+Pillow>=10.0
+opencv-python-headless>=4.8,<5
+rawpy>=0.19
+ExifRead>=3.0
+pillow-heif>=0.16
+send2trash>=1.8
+# AI 细评：Claude 用 anthropic；ChatGPT 和 Grok 都用 openai
+anthropic>=0.40
+openai>=1.80

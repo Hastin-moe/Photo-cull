@@ -1,0 +1,9 @@
+# Windows 脚本必须保持 CRLF，其余文本用 LF
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+*.command text eol=lf
+*.py    text eol=lf
+*.md    text eol=lf
+*.cube  text eol=lf
+*.txt   text eol=lf
+*.zip   binary
