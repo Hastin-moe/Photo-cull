@@ -13,7 +13,8 @@ SHORT = ".".join((re.findall(r"\d+", VERSION) + ["0", "0"])[:3])       # 1.7-bet
 
 datas = [(str(ROOT / d), d) for d in ("web", "locales", "luts")]
 binaries = []
-for pkg in ("rawpy", "pillow_heif", "cv2"):
+# cv2 交给 PyInstaller 自带的 hook 处理：手动收集会把 OpenCV 的加载脚本当成数据文件复制进去，运行时报「recursion is detected」
+for pkg in ("rawpy", "pillow_heif"):
     binaries += collect_dynamic_libs(pkg)
     datas += collect_data_files(pkg)
 datas += collect_data_files("certifi")
