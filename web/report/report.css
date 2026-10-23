@@ -1,0 +1,28 @@
+/* 筛选报告的样式（生成 report.html 时连同 tokens.css 一起内联） */
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--font-sans)}
+header{padding:20px 16px 8px;max-width:1500px;margin:auto}h1{font-size:20px;margin:0 0 4px}.mut{color:var(--mut);font-size:12px}
+.bar{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px}
+.bar .in{max-width:1500px;margin:auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,select{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:4px 12px;cursor:pointer}
+button.on{background:var(--acc);color:var(--bg);border-color:var(--acc)}button:disabled{opacity:.4;cursor:default}
+button.danger{color:var(--r);border-color:var(--r)}.sp{flex:1}
+.stats{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}.stats b{font-size:18px;display:block}
+main{max-width:1500px;margin:auto;padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.c{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+.c.sel{outline:3px solid var(--sel);outline-offset:-1px}
+.c img{width:100%;aspect-ratio:3/2;object-fit:contain;background:#0001;cursor:zoom-in;display:block}
+.pick{position:absolute;top:8px;left:8px;width:22px;height:22px;accent-color:var(--sel);cursor:pointer}
+.ed{position:absolute;top:6px;right:6px;font-size:12px;padding:2px 10px;background:#000a;color:#fff;border-color:#fff6}
+.b{padding:8px 10px;display:flex;flex-direction:column;gap:3px}.row{display:flex;justify-content:space-between;gap:6px;align-items:center}
+.n{font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.st{letter-spacing:1px;white-space:nowrap}
+.tag{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.pair{font-size:10px;padding:0 5px;border-radius:4px;background:var(--line);color:var(--mut);margin-left:4px;font-weight:600}
+.t-candidate{color:var(--g);border-color:var(--g)}.t-alt{color:var(--y);border-color:var(--y)}.t-reject,.t-error{color:var(--r);border-color:var(--r)}
+.fl{font-size:11px;color:var(--r)}.cm{font-size:12px}.lb{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px}
+.rate{display:flex;gap:2px}.rate button{border:0;background:none;padding:0 2px;font-size:16px;line-height:1;border-radius:4px;color:var(--mut)}
+.rate button.on{color:var(--y);background:none}.rate button.x.on{color:var(--r)}.rate button:hover{background:var(--line)}
+#zoom{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:9;padding:16px}#zoom img{max-width:100%;max-height:100%}
+.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;z-index:10;padding:16px}
+.modal.show{display:flex}.dlg{background:var(--card);border-radius:14px;padding:20px;max-width:440px;width:100%}
+.dlg h3{margin:0 0 8px}.dlg p{margin:6px 0;color:var(--mut)}.dlg .row{justify-content:flex-end;margin-top:16px}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--acc);color:var(--bg);padding:8px 14px;border-radius:999px;font-size:13px;display:none;z-index:11}

@@ -1,0 +1,68 @@
+<!doctype html><html lang="__LANG__"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="edit.title">照片编辑</title>
+<link rel="stylesheet" href="/static/common/tokens.css?v=__VER__">
+<link rel="stylesheet" href="/static/edit/app.css?v=__VER__">
+<script>window.I18N=__I18N__;</script>
+<script src="/static/common/i18n.js?v=__VER__"></script>
+</head><body>
+<header><div class="brand"><h1 data-i18n="edit.title">照片编辑</h1><span class="ver">photo-cull __VER__</span></div>
+ <div class="brand"><a class="xlink" data-href="/open/cull" target="_blank" rel="noopener" data-i18n-title="edit.open_cull_tip"><span data-i18n="edit.open_cull">照片筛选</span> ↗</a>
+  <select class="langsel" id="lang" aria-label="Language"></select><span class="pill" id="pill" data-i18n="edit.pill.ready">就绪</span></div></header>
+<div class="app">
+<aside class="files">
+ <div class="top">
+  <div class="row"><input type="text" id="folder" data-i18n-placeholder="edit.files.placeholder" spellcheck="false"><button id="pick" data-i18n="common.choose">选择…</button></div>
+  <div class="row"><button id="openFolder" style="flex:1" data-i18n="edit.files.open">打开文件夹</button><button id="fromCull" class="hidden" data-i18n="edit.files.from_cull" data-i18n-title="edit.files.from_cull_tip">筛选结果</button></div>
+  <div class="row"><label class="hint" style="flex:1"><input type="checkbox" id="rawOnly"> <span data-i18n="edit.files.raw_only">只看 RAW</span></label>
+   <span class="seg" id="thSeg"><button data-b="0" class="on" data-i18n="edit.files.small">小图</button><button data-b="1" data-i18n="edit.files.large">大图</button></span></div>
+ </div>
+ <div class="list" id="list"><div class="hint" style="grid-column:1/-1" data-i18n="edit.files.empty">选择一个照片文件夹。</div></div>
+</aside>
+<section class="stage">
+ <div class="bar"><button class="tg" id="togL" data-i18n-title="edit.bar.tog_left">◧</button><span class="title" id="title" data-i18n="edit.bar.no_photo">未打开照片</span><span class="hint" id="exif"></span><span class="sp"></span>
+  <span class="hint" id="autoNote"></span>
+  <select id="autoMode" data-i18n-title="edit.bar.meter_tip"></select><button id="auto" disabled data-i18n="edit.bar.auto">自动</button><button id="compare" disabled data-i18n="edit.bar.compare" data-i18n-title="edit.bar.compare_tip">按住对比原图</button>
+  <button id="copy" disabled data-i18n="edit.bar.copy">复制设置</button><button id="paste" disabled data-i18n="edit.bar.paste">粘贴设置</button><button id="reset" disabled data-i18n="edit.bar.reset">全部重置</button><button class="tg" id="togR" data-i18n-title="edit.bar.tog_right">◨</button></div>
+ <div class="warn" id="warn"></div>
+ <div class="view" id="view"><div class="empty" id="empty"><h2 data-i18n="edit.empty.title">编辑</h2><span data-i18n="edit.empty.body"></span></div>
+  <img id="img" class="hidden" alt="" data-i18n-title="edit.view.zoom_tip"><span class="badge" id="badge" data-i18n="edit.view.original">原图</span><div class="loading hidden" id="loading" data-i18n="edit.view.rendering">渲染中…</div></div>
+</section>
+<aside class="side">
+ <div class="card scopes"><div class="ct"><span data-i18n="edit.scope.title">监看</span><span class="seg" id="wfSeg"><button data-m="luma" class="on" data-i18n="edit.scope.luma">亮度波形</button><button data-m="parade" data-i18n="edit.scope.parade">RGB 分量</button></span></div>
+  <canvas id="hist" width="640" height="200" style="height:100px"></canvas>
+  <div class="clip"><span id="clipLo"></span><span id="renderMs"></span><span id="clipHi"></span></div>
+  <canvas id="wave" width="640" height="300" style="height:140px"></canvas></div>
+ <details class="card" open><summary><span data-i18n="edit.basic.title">基本调整</span><button id="resetBasic" style="font-size:11px;padding:1px 8px" data-i18n="edit.basic.reset">重置</button></summary><div id="sliders"></div>
+  <label class="hint"><input type="checkbox" id="mono"> <span data-i18n="edit.basic.mono">黑白</span></label>
+  <div class="vig"><div class="hint" style="margin-bottom:4px" data-i18n="edit.vig.title">镜头暗角</div>
+   <select id="lens"></select>
+   <div class="seg" id="vigSeg"><button data-l="weak"></button><button data-l="mid"></button><button data-l="strong"></button></div>
+   <div class="note" id="vigNote"></div></div></details>
+ <details class="card" open><summary><span data-i18n="edit.curve.title">曲线</span><span class="seg" id="chSeg"><button data-c="rgb" class="on">RGB</button><button data-c="r" data-i18n="edit.curve.r">红</button><button data-c="g" data-i18n="edit.curve.g">绿</button><button data-c="b" data-i18n="edit.curve.b">蓝</button></span></summary>
+  <canvas id="curve" width="560" height="560" style="aspect-ratio:1;background:var(--soft);touch-action:none;cursor:crosshair"></canvas>
+  <div class="row" style="margin-top:6px"><span class="hint" style="flex:1" data-i18n="edit.curve.hint">点击加点、拖动调整、双击删除</span><button id="resetCurve" style="font-size:11px;padding:1px 8px" data-i18n="edit.curve.reset">重置此通道</button></div></details>
+ <details class="card" open><summary data-i18n="edit.style.title">风格（LUT）</summary>
+  <div class="style-cur">
+   <div class="sty" id="lookBox"><button class="x" id="lookX" data-i18n-title="edit.style.remove">✕</button><div class="hint" data-i18n="edit.style.look">外观（来自 XMP 预设）</div><div class="nm" id="lookName"></div>
+    <div class="sl"><label data-i18n="edit.style.amount">强度</label><input type="range" id="lookAmt" min="0" max="200" step="1"><input type="number" id="lookAmtN" min="0" max="200"></div></div>
+   <div class="sty" id="lutBox"><button class="x" id="lutX" data-i18n-title="edit.style.remove">✕</button><div class="hint">LUT</div><div class="nm" id="lutName"></div>
+    <div class="sl"><label data-i18n="edit.style.amount">强度</label><input type="range" id="lutAmt" min="0" max="100" step="1"><input type="number" id="lutAmtN" min="0" max="100"></div>
+    <div class="row"><span class="hint" style="white-space:nowrap;flex:none" data-i18n="edit.style.space">输入空间</span><select id="lutSpace" style="flex:1"></select></div></div>
+   <div class="note" id="styleNote"></div>
+  </div>
+  <div class="row" style="margin-top:8px"><input type="text" id="libRoot" spellcheck="false" data-i18n-title="edit.lib.root_tip"><button id="libPick" data-i18n="common.choose" data-i18n-title="edit.lib.pick_tip">选择…</button><button id="libBuiltin" data-i18n="edit.lib.builtin" data-i18n-title="edit.lib.builtin_tip">内置</button></div>
+  <div class="row" style="margin-top:6px"><button id="lutAdd" data-i18n="edit.lib.add" data-i18n-title="edit.lib.add_tip">添加 LUT…</button><input type="file" id="lutFile" accept=".cube" multiple style="display:none"><span class="hint" id="lutAddNote" style="flex:1"></span></div>
+  <div class="row" style="margin-top:6px"><input type="text" id="libQ" data-i18n-placeholder="edit.lib.search"><button id="libLoad" data-i18n="edit.lib.refresh">刷新</button></div>
+  <div class="note" id="libScope"></div>
+  <div class="lib" id="lib"><div class="hint" style="padding:8px" data-i18n="edit.lib.empty">载入素材库后，点一个 LUT 即可套用。</div></div>
+  <div class="note" data-i18n="edit.lib.note"></div></details>
+ <details class="card" open><summary data-i18n="edit.export.title">导出</summary>
+  <div class="row"><select id="fmt" style="flex:1"><option value="jpeg">JPEG</option><option value="tiff" data-i18n="edit.export.tiff">TIFF 16 位</option></select>
+   <select id="size" style="flex:1"><option value="0" data-i18n="edit.export.full">原尺寸</option><option value="6000"></option><option value="4000"></option><option value="2048"></option></select></div>
+  <div class="sl" id="qRow"><label data-i18n="edit.export.quality">JPEG 质量</label><input type="range" id="quality" min="60" max="100" value="95"><input type="number" id="qualityN" min="60" max="100" value="95"></div>
+  <div class="hint" data-i18n="edit.export.hint"></div>
+  <button class="primary" id="export" style="width:100%;margin-top:8px" disabled data-i18n="edit.export.go">导出这张照片</button>
+  <div class="prog hidden" id="expProg"><i></i></div><div class="note" id="expNote"></div></details>
+</aside></div>
+<script src="/static/edit/app.js?v=__VER__"></script>
+</body></html>

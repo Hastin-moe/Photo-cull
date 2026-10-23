@@ -3,6 +3,9 @@
 
 在本机启动一个只监听 127.0.0.1 的小服务器，并用浏览器打开界面。
 分析、细评、写 XMP 全部调用同目录下的 cull.py。
+
+前后端分离：界面是 web/ 里的静态文件（HTML／CSS／JS），这里只负责提供页面和 /api 接口。
+界面文字在 locales/*.json，页面打开时把当前语言的语言包注入到 window.I18N。
 """
 from __future__ import annotations
 
@@ -25,26 +28,29 @@ from urllib.parse import unquote, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cull  # noqa: E402
 import editor  # noqa: E402
-import editor_ui  # noqa: E402
+import i18n  # noqa: E402
+from i18n import t  # noqa: E402
 from urllib.parse import parse_qs, quote  # noqa: E402
 
 CONFIG_DIR = Path.home() / ".photo-cull"
 CONFIG = CONFIG_DIR / "settings.json"
 TOKEN = secrets.token_urlsafe(16)
 PROVIDERS = cull.PROVIDERS
+WEB = Path(__file__).resolve().parent / "web"
+STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json"}
 
 DEFAULTS = {
     "folder": "", "recursive": False, "ai": False, "provider": "claude", "ai_alts": False,
-    "model_claude": PROVIDERS["claude"]["default"], "model_openai": PROVIDERS["openai"]["default"],
-    "model_grok": PROVIDERS["grok"]["default"], "model_gemini": PROVIDERS["gemini"]["default"],
-    "key_claude": "", "key_openai": "", "key_grok": "", "key_gemini": "", "remember_key": False,
+    **{"model_" + k: v["default"] for k, v in PROVIDERS.items()},
+    **{"key_" + k: "" for k in PROVIDERS}, "remember_key": False, "base_url_custom": "",
     "edit_folder": "", "edit_library": "",
     "xmp": True, "jpeg_embed": True, "xmp_all": False, "dry_run": True,
     "org": False, "org_dir": "", "org_result": True, "org_format": True, "org_rename": True, "org_move": False,
     "burst_gap": 15.0, "scene_gap": 60.0, "similarity": 0.6, "blur_warn": 0.58, "blur_reject": 0.75,
     "clip_high": 0.04, "clip_low": 0.30, "workers": 4,
 }
-KEYS = ("key_claude", "key_openai", "key_grok", "key_gemini")
+KEYS = tuple("key_" + k for k in PROVIDERS)
 TUNING = {"burst_gap", "scene_gap", "similarity", "blur_warn", "blur_reject", "clip_high", "clip_low"}
 SETTINGS_VERSION = 3
 
@@ -143,10 +149,34 @@ JOB = Job()
 # 启动时把自己的端口和令牌登记到 ~/.photo-cull/apps/<app>.json（仅本人可读），
 # 这样从报告点「编辑」时能直接跳到正在运行的编辑程序；没在运行就提示去启动。
 APP = "cull"
-APP_NAMES = {"cull": "照片筛选", "edit": "照片编辑"}
+APP_NAMES = ("cull", "edit")
 _EXT = ".bat" if os.name == "nt" else ".command"
-LAUNCHERS = {"cull": "启动筛选" + _EXT, "edit": "启动编辑" + _EXT}
-FILE_MANAGER = "资源管理器" if os.name == "nt" else "访达"
+LAUNCHERS = {"cull": "启动筛选" + _EXT, "edit": "启动编辑" + _EXT}      # 启动文件名本身不随语言变化
+_PLAT = "win" if os.name == "nt" else "mac" if sys.platform == "darwin" else "other"
+
+
+def app_name(app: str) -> str:
+    return t("common.app." + app)
+
+
+def lang_bundle(prefixes=None, lang=None) -> dict:
+    """网页用的语言包，补上与系统有关的说法（访达／资源管理器、废纸篓／回收站）；prefixes 限定分组（报告页用）。"""
+    b = i18n.bundle(None, lang)
+    d = dict(b["dict"])
+    d["common.file_manager"] = d.get("common.file_manager_" + _PLAT, "")
+    d["common.trash"] = d.get("common.trash_" + ("win" if _PLAT == "win" else "mac"), "")
+    if prefixes:
+        d = {k: v for k, v in d.items() if k.split(".", 1)[0] in prefixes}
+    b["dict"] = d
+    return b
+
+
+def render_page(app: str) -> bytes:
+    """web/<app>/index.html ＋ 版本号、语言、语言包。每次请求都读文件：改界面不用重启程序。"""
+    html_ = (WEB / app / "index.html").read_text(encoding="utf-8")
+    data = json.dumps(lang_bundle(), ensure_ascii=False).replace("</", "<\\/")
+    return (html_.replace("__VER__", cull.VERSION).replace("__LANG__", i18n.html_lang())
+            .replace("__I18N__", data)).encode("utf-8")
 EDIT_GET = {"/api/edit/thumb", "/api/edit/state", "/api/edit/export_status"}
 CULL_GET = {"/api/settings", "/api/status"}
 
@@ -186,21 +216,24 @@ def peer(app: str) -> dict | None:
 
 
 def help_page(app: str) -> bytes:
-    name, cmd = APP_NAMES[app], LAUNCHERS[app]
-    return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{name}没有运行</title><style>body{{font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;background:#f4f3ef;color:#1c1c1a;display:flex;
-align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px}}@media (prefers-color-scheme:dark){{body{{background:#141413;color:#ecebe6}}}}
-.b{{max-width:440px}}h2{{margin:0 0 8px}}code{{background:#8882;padding:1px 6px;border-radius:5px}}button{{font:inherit;margin-top:14px;padding:7px 16px;border-radius:8px;border:1px solid #8886;background:transparent;color:inherit;cursor:pointer}}</style></head>
-<body><div class="b"><h2>「{name}」没有在运行</h2><p>请双击「照片筛选工具」文件夹里的 <code>{cmd}</code>，等它在浏览器打开后，回到这里点「重试」。</p>
-<button onclick="location.reload()">重试</button></div></body></html>""".encode("utf-8")
+    import html as _h
+    name, cmd = app_name(app), LAUNCHERS[app]
+    page = (WEB / "help.html").read_text(encoding="utf-8")
+    for k, v in {"__LANG__": i18n.html_lang(), "__TITLE__": t("server.peer.title", name=name),
+                 "__HEAD__": t("server.peer.head", name=name), "__BODY__": t("server.peer.body", cmd=f"<code>{_h.escape(cmd)}</code>"),
+                 "__RETRY__": t("server.peer.retry")}.items():
+        page = page.replace(k, v)
+    return page.encode("utf-8")
 
 
 def build_argv(o: dict) -> list[str]:
-    argv = [o["folder"]]
+    argv = [o["folder"]]          # 语言不用传：同一进程里 i18n.current() 就是界面当前的语言
     if o.get("recursive"): argv.append("-r")
     if o.get("ai"):
         prov = o.get("provider") if o.get("provider") in PROVIDERS else "claude"
-        argv += ["--ai", "--provider", prov, "--model", o.get("model_" + prov) or PROVIDERS[prov]["default"]]
+        argv += ["--ai", "--provider", prov, "--model", o.get("model_" + prov) or PROVIDERS[prov]["default"] or ""]
+        if prov == "custom":
+            argv += ["--base-url", str(o.get("base_url_custom") or "")]
         if o.get("ai_alts"): argv.append("--ai-alts")
     if not o.get("xmp"): argv.append("--no-xmp")
     if not o.get("jpeg_embed", True): argv.append("--no-jpeg-embed")
@@ -231,7 +264,7 @@ def run_job(options: dict):
         with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
             JOB.result = cull.main(build_argv(options), confirm=JOB.confirm)
     except cull.Cancelled:
-        JOB.error = "已取消。已完成的细评结果保存在缓存里，下次不会重复收费。"
+        JOB.error = t("server.cancelled")
     except SystemExit as e:
         JOB.error = str(e.code) if e.code not in (None, 0) else None
     except Exception as e:
@@ -247,7 +280,7 @@ def run_job(options: dict):
 
 def _current():
     if not JOB.result:
-        raise RuntimeError("还没有筛选结果")
+        raise RuntimeError(t("server.no_result"))
     out = Path(JOB.result["out"])
     photos, meta = cull.load_results(out)
     return out, photos, meta
@@ -255,12 +288,12 @@ def _current():
 
 def mark_photo(path: str, stars: int) -> dict:
     if not isinstance(stars, int) or not -1 <= stars <= 5:
-        raise ValueError("星级必须是 -1（拒绝）到 5")
+        raise ValueError(t("server.bad_stars"))
     with JOB.edit:
         out, photos, meta = _current()
         p = next((x for x in photos if x.path == path and not x.trashed), None)
         if p is None:
-            raise ValueError("找不到这张照片")
+            raise ValueError(t("server.photo_not_found"))
         p.stars, p.label, p.manual = stars, cull.label_for(stars) if stars else "", True
         # 人工调整是明确的操作：即使上次是演练模式也写入，并同步到配对的每个文件
         written = cull.apply_marks(p, False, meta.get("jpeg_embed", True), meta.get("xmp_all", False))
@@ -293,9 +326,9 @@ def trash_photos(paths: list) -> dict:
         JOB.result = cull.summarize(photos, out, meta)
         try:
             import send2trash  # noqa: F401
-            where = "废纸篓"
+            where = t("common.trash_win" if os.name == "nt" else "common.trash_mac")
         except ImportError:
-            where = f"照片文件夹里的 {cull.TRASH_DIR}"
+            where = t("server.trash_fallback", dir=cull.TRASH_DIR)
         return {"trashed": done, "files": files, "where": where, "summary": JOB.result}
 
 
@@ -304,11 +337,13 @@ def organize_now(o: dict) -> dict:
     with JOB.edit:
         out, photos, meta = _current()
         src = Path(meta.get("src") or out.parent)
-        target = Path(str(o.get("org_dir") or "").strip() or "整理输出").expanduser()
+        target = Path(str(o.get("org_dir") or "").strip() or t("cull.org.default_dir")).expanduser()
         if not target.is_absolute():
             target = src / target
+        prev = meta.get("organized") or {}
+        dirs = cull.result_dirs(prev) if prev.get("out") and Path(prev["out"]) == target.resolve() else None
         st = cull.organize(photos, target, bool(o.get("org_result", True)), bool(o.get("org_format", True)),
-                           bool(o.get("org_rename", True)), bool(o.get("org_move")))
+                           bool(o.get("org_rename", True)), bool(o.get("org_move")), dirs=dirs)
         meta["organized"] = st
         cull.write_report(photos, out, meta)
         JOB.result = cull.summarize(photos, out, meta)
@@ -319,7 +354,7 @@ def organize_now(o: dict) -> dict:
 def load_previous(folder: str) -> dict:
     out = Path(folder).expanduser() / "photo-cull-report"
     if not (out / "results.json").is_file():
-        raise ValueError("这个文件夹还没有筛选结果，请先运行一次")
+        raise ValueError(t("server.no_prev"))
     photos, meta = cull.load_results(out)
     meta.setdefault("src", str(Path(folder).expanduser()))
     JOB.reset()
@@ -329,7 +364,8 @@ def load_previous(folder: str) -> dict:
 
 # ───────────────────────── 系统交互 ─────────────────────────
 
-def choose_folder(start: str = "", prompt: str = "选择要筛选的照片文件夹") -> str:
+def choose_folder(start: str = "", prompt: str = "") -> str:
+    prompt = (prompt or t("server.choose.photos")).replace('"', "'")
     if sys.platform == "darwin":
         script = f'POSIX path of (choose folder with prompt "{prompt}"'
         if start and Path(start).is_dir():
@@ -345,7 +381,7 @@ def choose_folder(start: str = "", prompt: str = "选择要筛选的照片文件
         root.destroy()
         return path or ""
     except Exception:
-        raise RuntimeError("当前系统无法弹出文件夹选择框，请直接粘贴路径。")
+        raise RuntimeError(t("server.choose.unavailable"))
 
 
 def reveal(path: str):
@@ -395,10 +431,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        page = editor_ui.PAGE if APP == "edit" else PAGE
         if url.path == "/" or (url.path == "/edit" and APP == "edit"):
-            html_ = page.replace("__VER__", cull.VERSION).replace("__FM__", FILE_MANAGER)
-            return self._send(200, html_.encode("utf-8"), "text/html; charset=utf-8")
+            return self._send(200, render_page(APP), "text/html; charset=utf-8")
+        if url.path.startswith("/static/"):                     # 界面的 CSS／JS（不含任何个人数据，不需要令牌）
+            target = (WEB / unquote(url.path[len("/static/"):])).resolve()
+            if WEB.resolve() not in target.parents or not target.is_file() or target.suffix not in STATIC_TYPES:
+                return self._send(404, b"not found")
+            return self._send(200, target.read_bytes(), STATIC_TYPES[target.suffix])
         if url.path == "/ping":
             return self._json({"app": APP})
         if url.path.startswith("/open/") or url.path == "/edit":       # /edit：旧版报告里的「编辑」按钮
@@ -434,8 +473,11 @@ class Handler(BaseHTTPRequestHandler):
             s = load_settings()
             s["env_keys"] = {k: bool(os.environ.get(v["env"]) or os.environ.get(v.get("alt_env", "") or "-"))
                              for k, v in PROVIDERS.items()}
-            s["providers"] = {k: {"name": v["name"], "models": v["models"], "console": v["console"], "env": v["env"]}
+            s["providers"] = {k: {"name": v["name"], "models": [{"id": m, "note": v.get("notes", {}).get(m, "")} for m in v["models"]],
+                                  "default": v["default"], "console": v["console"], "env": v["env"], "key_ph": v.get("key_ph", "")}
                               for k, v in PROVIDERS.items()}
+            s["provider_order"] = list(PROVIDERS)
+            s["lang_saved"] = bool(i18n.saved_lang() or i18n.normalize(os.environ.get("PHOTO_CULL_LANG")))   # 已选过就不再按浏览器语言自动切换
             try:
                 import send2trash  # noqa: F401
                 s["trash_ok"] = True
@@ -459,7 +501,7 @@ class Handler(BaseHTTPRequestHandler):
                                "folder": s.get("edit_folder", ""), "cull_folder": cf_,
                                "spaces": editor.active_spaces(), "meters": editor.meter_list(),
                                "default_meter": editor.DEFAULT_METER, "lenses": editor.lens_list(),
-                               "levels": editor.VIG_LEVELS})
+                               "levels": editor.vig_levels()})
         if url.path == "/api/edit/export_status":
             return self._json(editor.SESSION.export)
         self._send(404, b"not found")
@@ -469,31 +511,36 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, b"forbidden")
         length = int(self.headers.get("Content-Length") or 0)
         if length > 200 * 1024 * 1024:
-            return self._json({"error": "请求太大"}, 413)
+            return self._json({"error": t("server.too_large")}, 413)
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
             return self._json({"error": "bad json"}, 400)
         path = urlparse(self.path).path
-        shared = path in ("/api/choose", "/api/quit")
+        shared = path in ("/api/choose", "/api/quit", "/api/lang")
         if not shared and (APP == "edit") != path.startswith("/api/edit/"):
             return self._send(404, b"not found")
         try:
+            if path == "/api/lang":
+                return self._json({"lang": set_language(body.get("lang"))})
             if path == "/api/choose":
-                prompt = "选择整理输出的文件夹" if body.get("what") == "org" else "选择要筛选的照片文件夹"
+                prompt = t("server.choose.org" if body.get("what") == "org" else "server.choose.photos")
                 return self._json({"folder": choose_folder(body.get("start", ""), prompt)})
             if path == "/api/run":
                 if JOB.running:
-                    return self._json({"error": "已有任务在运行"}, 409)
+                    return self._json({"error": t("server.busy")}, 409)
                 folder = Path(str(body.get("folder", ""))).expanduser()
                 if not folder.is_dir():
-                    return self._json({"error": "找不到这个文件夹"}, 400)
+                    return self._json({"error": t("server.folder_not_found")}, 400)
                 body["folder"] = str(folder)
                 prov = body.get("provider", "claude")
                 if prov not in PROVIDERS:
-                    return self._json({"error": "未知的模型提供方"}, 400)
-                if body.get("ai") and not (body.get("key_" + prov) or os.environ.get(PROVIDERS[prov]["env"])):
-                    return self._json({"error": f"开启 {PROVIDERS[prov]['name']} 细评需要填写 API Key"}, 400)
+                    return self._json({"error": t("server.bad_provider")}, 400)
+                if body.get("ai") and not (body.get("key_" + prov) or cull.env_key(prov)):
+                    return self._json({"error": t("cull.err.need_key", name=PROVIDERS[prov]["name"])}, 400)
+                if body.get("ai") and prov == "custom" and not (str(body.get("base_url_custom") or "").startswith(("http://", "https://"))
+                                                               and str(body.get("model_custom") or "").strip()):
+                    return self._json({"error": t("cull.err.custom_incomplete")}, 400)
                 try:
                     save_settings(body)
                 except OSError as e:   # 设置保存失败不影响运行
@@ -502,22 +549,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if path == "/api/load":
                 if JOB.running:
-                    return self._json({"error": "已有任务在运行"}, 409)
+                    return self._json({"error": t("server.busy")}, 409)
                 return self._json({"result": load_previous(str(body.get("folder", "")))})
             if path == "/api/mark":
                 if JOB.running:
-                    return self._json({"error": "筛选进行中，请稍后再改"}, 409)
+                    return self._json({"error": t("server.busy_mark")}, 409)
                 return self._json(mark_photo(str(body.get("path", "")), body.get("stars")))
             if path == "/api/trash":
                 if JOB.running:
-                    return self._json({"error": "筛选进行中，请稍后再删"}, 409)
+                    return self._json({"error": t("server.busy_trash")}, 409)
                 paths = body.get("paths")
                 if not isinstance(paths, list) or not paths:
-                    return self._json({"error": "没有选择照片"}, 400)
+                    return self._json({"error": t("server.no_selection")}, 400)
                 return self._json(trash_photos([str(x) for x in paths]))
             if path == "/api/organize":
                 if JOB.running:
-                    return self._json({"error": "筛选进行中，请稍后再整理"}, 409)
+                    return self._json({"error": t("server.busy_org")}, 409)
                 return self._json(organize_now(body))
             if path.startswith("/api/edit/"):
                 return self._edit_post(path, body)
@@ -572,7 +619,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Render-Ms", str(meta.get("ms", 0)))
             if meta.get("notes"):
-                self.send_header("X-Notes", quote("；".join(meta["notes"])))
+                self.send_header("X-Notes", quote(t("common.sep").join(meta["notes"])))
             self.end_headers()
             self.wfile.write(data)
             return
@@ -581,12 +628,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/edit/save":
             p = str(body.get("path", ""))
             if not p or p != S.path:
-                raise ValueError("只能保存当前打开的照片")
+                raise ValueError(t("server.only_current_save"))
             return self._json({"file": editor.save_edit(p, body.get("params") or {})})
         if path == "/api/edit/lut_add":
             files = body.get("files") or []
             if not isinstance(files, list) or not files:
-                raise ValueError("没有选择文件")
+                raise ValueError(t("server.no_files"))
             added, failed = [], []
             for f in files[:50]:
                 try:
@@ -607,16 +654,16 @@ class Handler(BaseHTTPRequestHandler):
             if d.get("look") and mode:
                 extra = ""
                 if mode == "raw" and not d.get("for_raw", True):
-                    extra = "这个外观只为 JPEG 设计（Lightroom 里不能用于 RAW），套在 RAW 上效果可能有偏差"
+                    extra = t("edit.warn.look_jpeg_only")
                 elif mode != "raw" and not d.get("for_jpeg", True):
-                    extra = "这个外观只为 RAW 设计（Lightroom 里不能用于 JPEG），套在 JPEG 上颜色可能明显偏差；请改用同一套里标注 JPG 的版本"
+                    extra = t("edit.warn.look_raw_only")
                 if extra:
-                    d["warning"] = (d["warning"] + "；" if d.get("warning") else "") + extra
+                    d["warning"] = (d["warning"] + t("common.sep") if d.get("warning") else "") + extra
             return self._json(d)
         if path == "/api/edit/export":
             p = str(body.get("path", ""))
             if not p or p != S.path:
-                raise ValueError("只能导出当前打开的照片")
+                raise ValueError(t("server.only_current_export"))
             fmt = "tiff" if body.get("fmt") == "tiff" else "jpeg"
             st = S.start_export(p, body.get("params") or {}, body.get("out_dir") or None, fmt,
                                 int(body.get("quality") or 95), int(body.get("long_edge") or 0))
@@ -634,6 +681,19 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, b"not found")
 
 
+def set_language(code) -> str:
+    """界面切换语言：保存（两个程序共用）；筛选程序里已有结果时，按新语言重新生成报告。"""
+    lang = i18n.save_lang(code)
+    if APP == "cull" and JOB.result and not JOB.running:
+        try:
+            with JOB.edit:
+                out, photos, meta = _current()
+                cull.write_report(photos, out, meta)
+        except Exception as e:
+            print("report:", e, file=sys.__stderr__)
+    return lang
+
+
 def _remember(**kw):
     try:
         s = load_settings()
@@ -643,233 +703,17 @@ def _remember(**kw):
         pass
 
 
-PAGE = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>照片筛选</title>
-<style>
-:root{--bg:#f4f3ef;--panel:#fff;--fg:#1c1c1a;--mut:#74726c;--line:#e2e0da;--soft:#efede8;--acc:#1c1c1a;--acc-fg:#fff;
---g:#2f8a4c;--y:#b8860b;--r:#c0392b;--focus:#3b6fd8;--shadow:0 1px 2px #0000000d,0 8px 24px #00000008}
-@media (prefers-color-scheme:dark){:root{--bg:#141413;--panel:#1e1e1c;--fg:#ecebe6;--mut:#9b9992;--line:#33322e;--soft:#272724;--acc:#ecebe6;--acc-fg:#141413;--shadow:none}}
-*{box-sizing:border-box}html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue","Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--line)}
-.brand{display:flex;align-items:center;gap:14px}.brand h1{font-size:17px;margin:0;letter-spacing:.02em}.ver{color:var(--mut);font-size:12px}
-.tabs{display:flex;gap:4px;background:var(--soft);padding:3px;border-radius:9px}.tabs a{padding:5px 14px;border-radius:7px;color:var(--mut);text-decoration:none;font-weight:600;font-size:13px}
-.tabs a.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px #0002}
-.xlink{font-size:13px;color:var(--mut);text-decoration:none;border:1px solid var(--line);border-radius:7px;padding:4px 10px}.xlink:hover{color:var(--fg);background:var(--soft)}
-.pill{font-size:12px;padding:3px 10px;border-radius:999px;background:var(--soft);color:var(--mut)}.pill.run{background:#3b6fd81a;color:var(--focus)}.pill.ok{background:#2f8a4c1a;color:var(--g)}.pill.err{background:#c0392b1a;color:var(--r)}
-.app{display:grid;grid-template-columns:360px 1fr;height:calc(100% - 55px)}
-aside{border-right:1px solid var(--line);overflow:auto;padding:18px 18px 110px;position:relative}
-section.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:var(--shadow)}
-.ct{font-size:12px;font-weight:600;color:var(--mut);letter-spacing:.06em;margin:0 0 10px}
-.folder{display:flex;gap:8px}.folder input{flex:1;min-width:0}
-input[type=text],input[type=password],input[type=number],select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 9px;width:100%}
-input:focus,select:focus,button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
-button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:7px 12px;white-space:nowrap}
-button:hover{background:var(--soft)}button:disabled{opacity:.45;cursor:default}
-.primary{background:var(--acc);color:var(--acc-fg);border-color:var(--acc);font-weight:600}.primary:hover{background:var(--acc);opacity:.88}
-.seg{display:grid;grid-template-columns:1fr 1fr;background:var(--soft);border-radius:9px;padding:3px;gap:3px}
-.seg.three{grid-template-columns:1fr 1fr 1fr}.seg.four{grid-template-columns:repeat(4,1fr)}.seg.four button{padding:7px 2px}.seg button{border:0;background:transparent;padding:7px 6px;font-size:13px}.seg button.on{background:var(--panel);box-shadow:0 1px 2px #0002;font-weight:600}
-.chk{display:flex;align-items:flex-start;gap:9px;padding:6px 0;cursor:pointer}.chk input{margin:3px 0 0;accent-color:var(--acc)}
-.chk small,.hint{display:block;color:var(--mut);font-size:12px;line-height:1.4}
-.field{margin-top:10px}.field label{display:block;font-size:12px;color:var(--mut);margin-bottom:4px}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-details summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--mut);letter-spacing:.06em;list-style:none}details summary::before{content:"▸ ";}details[open] summary::before{content:"▾ "}
-.runbar{position:fixed;bottom:0;left:0;width:360px;padding:14px 18px;background:linear-gradient(transparent,var(--bg) 30%);display:flex;gap:8px}
-.runbar .primary{flex:1;padding:11px}
-main{overflow:auto;padding:22px;display:flex;flex-direction:column;gap:16px}
-.empty{margin:auto;max-width:520px;text-align:center;color:var(--mut)}.empty h2{color:var(--fg);font-size:20px;margin:0 0 8px}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:22px;text-align:left}
-.steps div{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}.steps b{display:block;color:var(--fg);margin-bottom:2px}
-.stages{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.stage{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.stage .h{display:flex;justify-content:space-between;font-size:13px}.stage .h span{color:var(--mut)}
-.stage.active{border-color:var(--focus)}.stage.done .h b::after{content:" ✓";color:var(--g)}.stage.skip{opacity:.45}
-.prog{height:6px;border-radius:9px;background:var(--soft);margin-top:10px;overflow:hidden}.prog i{display:block;height:100%;width:0;background:var(--focus);transition:width .3s}
-.stage.done .prog i{background:var(--g)}
-.log{background:var(--panel);border:1px solid var(--line);border-radius:12px}
-.log pre{margin:0;padding:12px 14px;max-height:180px;overflow:auto;font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;color:var(--mut);white-space:pre-wrap}
-.stats{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
-.stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}.stat b{font-size:24px;display:block;line-height:1.2}.stat span{font-size:12px;color:var(--mut)}
-.stat.g b{color:var(--g)}.stat.y b{color:var(--y)}.stat.r b{color:var(--r)}
-.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.note{color:var(--mut);font-size:12px}
-.err{background:#c0392b14;border:1px solid #c0392b55;color:var(--r);border-radius:12px;padding:12px 14px}
-iframe{width:100%;flex:1;min-height:560px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
-.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;z-index:10;padding:16px}
-.modal.show{display:flex}.dlg{background:var(--panel);border-radius:14px;padding:22px;max-width:420px;width:100%;box-shadow:0 20px 60px #0004}
-.dlg h3{margin:0 0 8px;font-size:17px}.dlg p{margin:6px 0;color:var(--mut)}.dlg .big{font-size:28px;font-weight:700;color:var(--fg)}
-.dlg .row{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
-.hidden{display:none!important}
-@media (max-width:860px){.app{grid-template-columns:1fr;height:auto}aside{border-right:0;padding-bottom:18px}.runbar{position:static;width:auto;padding:0 18px 18px;background:none}
-.stats{grid-template-columns:repeat(3,1fr)!important}.stages,.steps{grid-template-columns:1fr}}
-</style></head><body>
-<header><div class="brand"><h1>照片筛选</h1><span class="ver">photo-cull __VER__</span></div><div class="brand"><a class="xlink" data-href="/open/edit" target="_blank" rel="noopener" title="在新标签页打开照片编辑程序（需要先双击「启动编辑」）">照片编辑 ↗</a><span class="pill" id="pill">就绪</span></div></header>
-<div class="app">
-<aside>
- <section class="card"><p class="ct">照片文件夹</p>
-  <div class="folder"><input type="text" id="folder" placeholder="选择或粘贴文件夹路径" spellcheck="false"><button id="pick">选择…</button></div>
-  <label class="chk"><input type="checkbox" id="recursive"><span>包含子文件夹</span></label>
-  <p class="hint" style="margin:4px 0 8px">同一文件夹里同名的 RAW（DNG／ARW／RAF…）和 JPEG 会自动配对，一起评分、标记和删除。</p>
-  <button id="loadPrev" style="width:100%">载入这个文件夹上次的结果</button>
- </section>
- <section class="card"><p class="ct">筛选方式</p>
-  <div class="seg" data-mode><button data-ai="0">仅本地筛选</button><button data-ai="1">本地＋AI 细评</button></div>
-  <p class="hint" id="modeHint" style="margin:10px 0 0"></p>
-  <div id="aiBox">
-   <div class="field"><label>评价模型</label><div class="seg four" id="provSeg"><button data-p="claude">Claude</button><button data-p="openai">ChatGPT</button><button data-p="grok">Grok</button><button data-p="gemini">Gemini</button></div></div>
-   <div class="field"><label>模型名称</label><input type="text" id="model" list="modelList" spellcheck="false" autocomplete="off"><datalist id="modelList"></datalist>
-    <span class="hint">可从列表选择，也可以直接填写服务商提供的其他模型名称。</span></div>
-   <div class="field"><label id="keyLabel">API Key</label><input type="password" id="api_key" autocomplete="off" spellcheck="false">
-    <span class="hint" id="keyHint"></span></div>
-   <label class="chk"><input type="checkbox" id="remember_key"><span>记住在这台电脑<small>保存在 ~/.photo-cull，仅本人可读</small></span></label>
-   <label class="chk"><input type="checkbox" id="ai_alts"><span>连拍备选也细评<small>更全面，但费用更高</small></span></label>
-  </div>
- </section>
- <section class="card"><p class="ct">输出</p>
-  <label class="chk"><input type="checkbox" id="xmp"><span>写入星级与色标<small>RAW 写 XMP 边车文件，Lightroom Classic／Capture One 可读</small></span></label>
-  <label class="chk"><input type="checkbox" id="jpeg_embed"><span>同步写入 JPEG 内嵌 XMP<small>Lightroom 里 JPEG 也能看到星级；只改元数据，写完逐字节核对画面数据不变</small></span></label>
-  <label class="chk"><input type="checkbox" id="xmp_all"><span>单独的 JPEG／HEIC 也写边车 XMP<small>给 Capture One 用；Lightroom 不读 JPEG 的边车</small></span></label>
-  <label class="chk"><input type="checkbox" id="dry_run"><span>演练模式<small>只生成报告，不写星级、不整理文件。第一次建议开启</small></span></label>
- </section>
- <section class="card"><p class="ct">整理输出</p>
-  <label class="chk"><input type="checkbox" id="org"><span>评分后整理到输出文件夹<small>也可以先不勾，在报告里复核完再点「按当前星级整理」</small></span></label>
-  <div id="orgBox">
-   <div class="field"><label>输出文件夹</label><div class="folder"><input type="text" id="org_dir" placeholder="留空＝照片文件夹/整理输出" spellcheck="false"><button id="pickOrg">选择…</button></div></div>
-   <div class="field"><label>方式</label><div class="seg" id="orgMode"><button data-m="0">复制</button><button data-m="1">移动</button></div>
-    <span class="hint" id="orgHint" style="margin-top:6px"></span></div>
-   <label class="chk"><input type="checkbox" id="org_result"><span>分成 保留／淘汰 两个文件夹<small>淘汰＝拒绝（X）的照片，其余都算保留</small></span></label>
-   <label class="chk"><input type="checkbox" id="org_format"><span>每个里面再分 JPEG／RAW</span></label>
-   <label class="chk"><input type="checkbox" id="org_rename"><span>重命名为 星级_机型_原文件名<small>只改输出文件夹里的，原文件名不变</small></span></label>
-   <p class="hint" id="orgEx" style="margin:6px 0 0;font-family:ui-monospace,Menlo,monospace;word-break:break-all"></p>
-  </div>
- </section>
- <section class="card"><details><summary>高级参数</summary>
-  <div class="grid2" style="margin-top:12px">
-   <div class="field"><label>连拍间隔（秒）</label><input type="number" id="burst_gap" step="1" min="0"></div>
-   <div class="field"><label>同场景间隔（秒）</label><input type="number" id="scene_gap" step="5" min="0"></div>
-   <div class="field"><label>同场景相似度</label><input type="number" id="similarity" step="0.05" min="0" max="1"></div>
-   <div class="field"><label>模糊提示阈值</label><input type="number" id="blur_warn" step="0.01" min="0" max="1"></div>
-   <div class="field"><label>模糊淘汰阈值</label><input type="number" id="blur_reject" step="0.01" min="0" max="1"></div>
-   <div class="field"><label>高光溢出提示</label><input type="number" id="clip_high" step="0.01" min="0" max="1"></div>
-   <div class="field"><label>暗部死黑提示</label><input type="number" id="clip_low" step="0.05" min="0" max="1"></div>
-   <div class="field"><label>并行数</label><input type="number" id="workers" step="1" min="1" max="16"></div>
-  </div>
-  <p class="hint" style="margin-top:10px">清晰照片被误判模糊 → 调高两个模糊阈值；同一场景没分到一组 → 调大「同场景间隔」或调小「同场景相似度」。</p>
- </details></section>
- <div class="runbar"><button class="primary" id="run">开始筛选</button><button id="cancel" class="hidden">取消</button></div>
-</aside>
-<main id="main">
- <div class="empty" id="empty"><h2>选一个文件夹，开始筛选</h2>
-  <div>支持 Leica／松下 DNG、Sony ARW、富士 RAF 等 RAW，以及 JPG／HEIC／PNG。同名 RAW＋JPEG 自动配对。画面数据不会被改动。</div>
-  <div class="steps"><div><b>1 · 本地分析</b>对焦、曝光、人脸与闭眼、连拍分组，不花钱</div>
-   <div><b>2 · AI 细评</b>可选 Claude／ChatGPT／Grok／Gemini，只评入围照片，调用前先确认用量</div>
-   <div><b>3 · 复核与整理</b>在报告里改星级、删除废片，RAW 和 JPEG 同步；可按星级分文件夹、重命名</div></div></div>
- <div id="work" class="hidden" style="display:flex;flex-direction:column;gap:16px;flex:1">
-  <div class="stages">
-   <div class="stage" id="st-analyze"><div class="h"><b>本地分析</b><span></span></div><div class="prog"><i></i></div></div>
-   <div class="stage" id="st-ai"><div class="h"><b id="aiStageName">AI 细评</b><span></span></div><div class="prog"><i></i></div></div>
-   <div class="stage" id="st-xmp"><div class="h"><b>写入结果</b><span></span></div><div class="prog"><i></i></div></div>
-  </div>
-  <div class="err hidden" id="err"></div>
-  <div id="done" class="hidden" style="display:flex;flex-direction:column;gap:14px;flex:1">
-   <div class="stats" id="stats"></div>
-   <div class="actions"><button class="primary" id="openReport">在浏览器中打开报告</button><button id="revealReport">在__FM__中显示报告</button><button id="revealPhotos">打开照片文件夹</button><button id="orgNow">按当前星级整理</button><button id="revealOrg" class="hidden">打开整理输出</button><span class="note" id="doneNote"></span></div>
-   <iframe id="report" title="筛选报告"></iframe>
-  </div>
-  <details class="log" id="logBox"><summary style="padding:10px 14px">运行日志</summary><pre id="log"></pre></details>
- </div>
-</main></div>
-<div class="modal" id="modal"><div class="dlg"><h3>确认调用 AI 细评</h3>
- <p>将对 <span class="big" id="mCount">0</span> 张入围照片调用 <b id="mModel"></b>。</p>
- <p id="mTokens"></p><p class="hint">已评过的照片会命中缓存，不会重复收费。实际费用以服务商账单为准。</p>
- <div class="row"><button id="mNo">跳过细评</button><button class="primary" id="mYes">继续</button></div></div></div>
-<script>
-const TOKEN=new URLSearchParams(location.search).get("t")||"";const $=id=>document.getElementById(id);
-const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-Token":TOKEN,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j});
-const F=["folder","recursive","remember_key","ai_alts","xmp","jpeg_embed","xmp_all","dry_run","org","org_dir","org_result","org_format","org_rename","burst_gap","scene_gap","similarity","blur_warn","blur_reject","clip_high","clip_low","workers"];
-let S={ai:false,provider:"claude",models:{},keys:{},envKeys:{},P:{},orgMove:false},since=0,timer=null;
-const PH={claude:"sk-ant-…",openai:"sk-…",grok:"xai-…",gemini:"AIza…"};
-document.querySelectorAll(".xlink").forEach(a=>a.href=a.dataset.href+"?t="+encodeURIComponent(TOKEN));
-function setAI(v){S.ai=v;document.querySelectorAll(".seg[data-mode] button").forEach(b=>b.classList.toggle("on",(b.dataset.ai=="1")==v));
- $("aiBox").classList.toggle("hidden",!v);$("modeHint").textContent=v?"本地先淘汰废片和连拍重复帧，只把入围照片缩小后发给所选模型，评价构图、光线、瞬间。":"只做技术筛选，完全在本机运行，不联网、不花钱。"}
-function stash(){S.models[S.provider]=$("model").value.trim();S.keys[S.provider]=$("api_key").value.trim()}
-function setProv(p,keep){if(!keep)stash();S.provider=p;const info=S.P[p]||{name:p,models:[],console:"",env:""};
- document.querySelectorAll("#provSeg button").forEach(b=>b.classList.toggle("on",b.dataset.p==p));
- $("model").value=S.models[p]||info.models[0]||"";$("modelList").innerHTML=info.models.map(m=>`<option value="${m}">`).join("");
- $("keyLabel").textContent=info.name+" API Key";$("api_key").value=S.keys[p]||"";$("api_key").placeholder=PH[p]||"";
- $("keyHint").textContent=S.envKeys[p]?`已检测到环境变量 ${info.env}，可留空。`:`在 ${info.console} 申请，按量付费，与网页版订阅无关。`}
-function setOrgMove(v){S.orgMove=v;document.querySelectorAll("#orgMode button").forEach(b=>b.classList.toggle("on",(b.dataset.m=="1")==v));
- $("orgHint").textContent=v?"照片会从原文件夹搬走。已导入 Lightroom／Capture One 的照片移动后会显示「文件丢失」，需要在软件里重新定位。":"原文件夹保持不变，输出文件夹里是一份副本（需要双倍空间）。再次整理时会更新这份副本，不会重复复制。";syncOrg()}
-function syncOrg(){const on=$("org").checked;$("orgBox").style.opacity=on?1:.5;
- const r=$("org_result").checked,f=$("org_format").checked,n=$("org_rename").checked,d=$("org_dir").value.trim()||"整理输出";
- const base=d.replace(/[\\/]+$/,"").split(/[\\/]/).pop()||d,ex=(st,file)=>[base,r?(st=="X"?"淘汰":"保留"):"",f?(/\.(jpe?g|heic|png)$/i.test(file)?"JPEG":"RAW"):"",(n?st+"_ILCE-1M2_":"")+file].filter(Boolean).join("/");
- $("orgEx").textContent="例："+ex("4","DSC01234.ARW")+"\n　　"+ex("X","DSC01235.JPG");$("orgEx").style.whiteSpace="pre-wrap"}
-function orgOpts(){return{org_dir:$("org_dir").value.trim(),org_result:$("org_result").checked,org_format:$("org_format").checked,org_rename:$("org_rename").checked,org_move:S.orgMove}}
-function collect(){stash();const o={ai:S.ai,provider:S.provider,org_move:S.orgMove};F.forEach(k=>{const e=$(k);o[k]=e.type=="checkbox"?e.checked:e.type=="number"?Number(e.value):e.value.trim()});
- ["claude","openai","grok","gemini"].forEach(p=>{o["model_"+p]=S.models[p]||"";o["key_"+p]=S.keys[p]||""});return o}
-function fill(s){F.forEach(k=>{const e=$(k);if(e.type=="checkbox")e.checked=!!s[k];else e.value=s[k]??""});
- S.P=s.providers||{};S.envKeys=s.env_keys||{};["claude","openai","grok","gemini"].forEach(p=>{S.models[p]=s["model_"+p];S.keys[p]=s["key_"+p]||""});
- setAI(!!s.ai);setProv(s.provider||"claude",true);syncXmp();setOrgMove(!!s.org_move)}
-function syncXmp(){const on=$("xmp").checked;["jpeg_embed","xmp_all"].forEach(k=>$(k).disabled=!on)}
-function pill(t,c){const p=$("pill");p.textContent=t;p.className="pill "+(c||"")}
-function stageUI(st){const order=["analyze","ai","xmp","done"],cur=order.indexOf(st.stage);
- [["analyze",0],["ai",1],["xmp",2]].forEach(([k,i])=>{const el=$("st-"+k),bar=el.querySelector("i"),lab=el.querySelector(".h span");
-  const skip=k=="ai"&&!S.runAI;el.className="stage"+(skip?" skip":cur>i?" done":cur==i?" active":"");
-  let pct=cur>i?100:cur==i&&st.total?st.done/st.total*100:0;bar.style.width=(skip?0:pct)+"%";
-  lab.textContent=skip?"未开启":cur>i?"完成":cur==i&&st.total&&k!="xmp"?`${st.done}/${st.total}`:cur==i?"进行中":"等待"})}
-function stats(r,reload){const items=[["总数",r.total,""],["RAW+JPEG 配对",r.pairs||0,""],["4★以上",r.top,"g"],["入围",r.candidate,"g"],["连拍备选",r.alt,"y"],["淘汰",r.reject,"r"]];
- if(r.error)items.push(["读取失败",r.error,"r"]);if(r.trashed)items.push(["已删除",r.trashed,""]);
- $("stats").style.gridTemplateColumns=`repeat(${Math.min(items.length,8)},1fr)`;
- $("stats").innerHTML=items.map(([k,v,c])=>`<div class="stat ${c}"><b>${v}</b><span>${k}</span></div>`).join("");
- $("doneNote").textContent=r.dry_run?"演练模式：未批量写入星级。报告里手动改的星级会立即写入。":r.xmp?`已为 ${r.xmp} 张照片同步写入星级。Lightroom 请执行「元数据 → 从文件读取元数据」。`:"未批量写入星级。";
- const g=r.organized;$("revealOrg").classList.toggle("hidden",!(g&&!g.dry_run));
- if(g){const verb=g.mode=="move"?"移动":"复制";$("doneNote").textContent+=g.dry_run?` 演练：本应${verb} ${g.photos} 张到 ${g.out}。`:` 已${verb}整理 ${g.photos} 张（保留 ${g.kept}，淘汰 ${g.rejected}）到 ${g.out}。`+(g.errors&&g.errors.length?` ${g.errors.length} 个文件失败，详见日志。`:"")}
- if(reload!==false)$("report").src=`/out/${TOKEN}/report.html?`+Date.now()}
-window.addEventListener("message",e=>{if(e.origin===location.origin&&e.data&&e.data.pc=="summary")stats(e.data.s,false)});
-async function poll(){try{const st=await api("/api/status?since="+since);since=st.next;
- if(st.lines.length){const l=$("log");l.textContent+=st.lines.join("\n")+"\n";l.scrollTop=l.scrollHeight}
- stageUI(st);
- if(st.pending){$("mCount").textContent=st.pending.count;$("mModel").textContent=st.pending.model;
-  const fm=n=>n>=1e6?(n/1e6).toFixed(2)+"M":Math.round(n/1e3)+"K";$("mTokens").textContent=`预计约 ${fm(st.pending.tokens_in)} 输入 token ＋ ${fm(st.pending.tokens_out)} 输出 token（粗估）。`;$("modal").classList.add("show")}
- else $("modal").classList.remove("show");
- if(!st.running){clearInterval(timer);timer=null;$("run").disabled=false;$("loadPrev").disabled=false;$("cancel").classList.add("hidden");
-  if(st.error){$("err").textContent=st.error;$("err").classList.remove("hidden");pill("出错","err");$("logBox").open=true}
-  if(st.result){stats(st.result);$("done").classList.remove("hidden");pill("完成","ok")}
-  else if(!st.error)pill("就绪")}}catch(e){console.log(e)}}
-function showWork(){$("empty").classList.add("hidden");$("work").classList.remove("hidden");$("err").classList.add("hidden")}
-async function run(){const o=collect();if(!o.folder){alert("请先选择照片文件夹");return}
- if(o.ai&&!o["key_"+o.provider]&&!S.envKeys[o.provider]){alert(`开启 ${(S.P[o.provider]||{}).name||""} 细评需要填写 API Key`);$("api_key").focus();return}
- try{await api("/api/run",o)}catch(e){alert(e.message);return}
- S.runAI=o.ai;$("aiStageName").textContent=o.ai?((S.P[o.provider]||{}).name||"AI")+" 细评":"AI 细评";
- since=0;$("log").textContent="";showWork();$("done").classList.add("hidden");$("run").disabled=true;$("loadPrev").disabled=true;$("cancel").classList.remove("hidden");
- pill("运行中","run");stageUI({stage:"analyze",done:0,total:0});timer=setInterval(poll,400)}
-async function loadPrev(){const folder=$("folder").value.trim();if(!folder){alert("请先选择照片文件夹");return}
- try{const r=await api("/api/load",{folder});S.runAI=false;showWork();stageUI({stage:"done",done:1,total:1});stats(r.result);$("done").classList.remove("hidden");pill("已载入","ok")}catch(e){alert(e.message)}}
-$("provSeg").querySelectorAll("button").forEach(b=>b.onclick=()=>setProv(b.dataset.p));
-document.querySelectorAll(".seg[data-mode] button").forEach(b=>b.onclick=()=>setAI(b.dataset.ai=="1"));
-$("xmp").onchange=syncXmp;$("run").onclick=run;$("loadPrev").onclick=loadPrev;$("cancel").onclick=()=>api("/api/cancel",{});
-$("pick").onclick=async()=>{$("pick").disabled=true;try{const r=await api("/api/choose",{start:$("folder").value});if(r.folder)$("folder").value=r.folder}catch(e){alert(e.message)}$("pick").disabled=false};
-$("mYes").onclick=()=>{api("/api/confirm",{yes:true});$("modal").classList.remove("show")};
-$("mNo").onclick=()=>{api("/api/confirm",{yes:false});$("modal").classList.remove("show")};
-$("openReport").onclick=()=>window.open(`/out/${TOKEN}/report.html`,"_blank");
-$("revealReport").onclick=()=>api("/api/reveal",{what:"report"});$("revealOrg").onclick=()=>api("/api/reveal",{what:"org"});
-["org","org_result","org_format","org_rename"].forEach(k=>$(k).onchange=syncOrg);$("org_dir").oninput=syncOrg;
-$("orgMode").querySelectorAll("button").forEach(b=>b.onclick=()=>setOrgMove(b.dataset.m=="1"));
-$("pickOrg").onclick=async()=>{$("pickOrg").disabled=true;try{const r=await api("/api/choose",{start:$("org_dir").value||$("folder").value,what:"org"});if(r.folder){$("org_dir").value=r.folder;syncOrg()}}catch(e){alert(e.message)}$("pickOrg").disabled=false};
-$("orgNow").onclick=async()=>{const o=orgOpts();
- if(o.org_move&&!confirm("移动模式会把照片从原文件夹搬到输出文件夹。确定继续吗？"))return;
- $("orgNow").disabled=true;try{const r=await api("/api/organize",o);stats(r.summary);
-  const g=r.organized;if(g&&g.errors&&g.errors.length){const l=$("log");l.textContent+="整理失败：\n"+g.errors.join("\n")+"\n";$("logBox").open=true}}catch(e){alert(e.message)}$("orgNow").disabled=false};$("revealPhotos").onclick=()=>api("/api/reveal",{what:"photos"});
-api("/api/settings").then(fill).catch(()=>{document.body.innerHTML="<p style='padding:40px'>链接已失效，请重新运行启动程序。</p>"});
-</script></body></html>"""
-
-
 def main(argv=None):
     global APP
     import argparse
     import signal
-    ap = argparse.ArgumentParser(prog="gui.py", description="照片筛选／照片编辑 图形界面")
-    ap.add_argument("--app", choices=list(APP_NAMES), default="cull", help="cull＝照片筛选，edit＝照片编辑")
-    APP = ap.parse_args(argv).app
+    ap = argparse.ArgumentParser(prog="gui.py", description="Photo Cull / Photo Edit")
+    ap.add_argument("--app", choices=list(APP_NAMES), default="cull", help="cull = Photo Cull, edit = Photo Edit")
+    ap.add_argument("--lang", choices=list(i18n.LANGS), help="interface language (default: saved choice or system language)")
+    a = ap.parse_args(argv)
+    APP = a.app
+    if a.lang:
+        i18n.save_lang(a.lang)
     port = int(os.environ.get("PHOTO_CULL_PORT", "0"))
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     register(server.server_address[1])
@@ -877,8 +721,8 @@ def main(argv=None):
         if sig is not None:
             signal.signal(sig, lambda *_: sys.exit(0))
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={TOKEN}"
-    print(f"{APP_NAMES[APP]} 已启动：", url, flush=True)
-    print("关闭这个终端窗口即可退出。", flush=True)
+    print(t("server.started", name=app_name(APP)), url, flush=True)
+    print(t("server.close_hint"), flush=True)
     if not os.environ.get("PHOTO_CULL_NO_BROWSER"):
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:

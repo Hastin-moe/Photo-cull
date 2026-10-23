@@ -1,0 +1,18 @@
+<!doctype html><html lang="__LANG__"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="report.title">Photo Cull Report</title>
+<!-- 这个文件是模板：生成报告时，__CSS__／__JS__／__I18N__／__DATA__／__INFO__ 会被替换成内联内容，
+     所以 report.html 是一个独立文件，拷到别处直接双击也能看。 -->
+<style>
+__CSS__
+</style></head><body>
+<header><h1 data-i18n="report.title">Photo Cull Report</h1><div class="mut"><span id="metaLine"></span> · <span id="modeNote"></span></div>
+<div class="stats" id="stats"></div></header>
+<div class="bar"><div class="in" id="filters"></div></div>
+<main id="grid"></main><div id="zoom" onclick="this.style.display='none'"><img alt=""></div>
+<div class="modal" id="modal"><div class="dlg"><h3 id="mT"></h3><div id="mB"></div>
+<div class="row"><button onclick="closeM()" data-i18n="common.cancel">Cancel</button><button class="danger" id="mGo"></button></div></div></div>
+<div class="toast" id="toast"></div>
+<script>window.I18N=__I18N__;window.REPORT_DATA=__DATA__;window.REPORT_INFO=__INFO__;</script>
+<script>
+__JS__
+</script></body></html>

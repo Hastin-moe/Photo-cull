@@ -1,0 +1,53 @@
+/* 照片筛选界面的样式。颜色、字体等变量在 ../common/tokens.css */
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:14px}.brand h1{font-size:17px;margin:0;letter-spacing:.02em}.ver{color:var(--mut);font-size:12px}
+.tabs{display:flex;gap:4px;background:var(--soft);padding:3px;border-radius:9px}.tabs a{padding:5px 14px;border-radius:7px;color:var(--mut);text-decoration:none;font-weight:600;font-size:13px}
+.tabs a.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px #0002}
+.xlink{font-size:13px;color:var(--mut);text-decoration:none;border:1px solid var(--line);border-radius:7px;padding:4px 10px}.xlink:hover{color:var(--fg);background:var(--soft)}
+.pill{font-size:12px;padding:3px 10px;border-radius:999px;background:var(--soft);color:var(--mut)}.pill.run{background:#3b6fd81a;color:var(--focus)}.pill.ok{background:#2f8a4c1a;color:var(--g)}.pill.err{background:#c0392b1a;color:var(--r)}
+.app{display:grid;grid-template-columns:360px 1fr;height:calc(100% - 55px)}
+aside{border-right:1px solid var(--line);overflow:auto;padding:18px 18px 110px;position:relative}
+section.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:var(--shadow)}
+.ct{font-size:12px;font-weight:600;color:var(--mut);letter-spacing:.06em;margin:0 0 10px}
+.folder{display:flex;gap:8px}.folder input{flex:1;min-width:0}
+input[type=text],input[type=password],input[type=number],select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 9px;width:100%}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:7px 12px;white-space:nowrap}
+button:hover{background:var(--soft)}button:disabled{opacity:.45;cursor:default}
+.primary{background:var(--acc);color:var(--acc-fg);border-color:var(--acc);font-weight:600}.primary:hover{background:var(--acc);opacity:.88}
+.seg{display:grid;grid-template-columns:1fr 1fr;background:var(--soft);border-radius:9px;padding:3px;gap:3px}
+.seg.three{grid-template-columns:1fr 1fr 1fr}.seg.four{grid-template-columns:repeat(4,1fr)}.seg.four button{padding:7px 2px}.seg button{border:0;background:transparent;padding:7px 6px;font-size:13px}.seg button.on{background:var(--panel);box-shadow:0 1px 2px #0002;font-weight:600}
+.chk{display:flex;align-items:flex-start;gap:9px;padding:6px 0;cursor:pointer}.chk input{margin:3px 0 0;accent-color:var(--acc)}
+.chk small,.hint{display:block;color:var(--mut);font-size:12px;line-height:1.4}
+.field{margin-top:10px}.field label{display:block;font-size:12px;color:var(--mut);margin-bottom:4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+details summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--mut);letter-spacing:.06em;list-style:none}details summary::before{content:"▸ ";}details[open] summary::before{content:"▾ "}
+.runbar{position:fixed;bottom:0;left:0;width:360px;padding:14px 18px;background:linear-gradient(transparent,var(--bg) 30%);display:flex;gap:8px}
+.runbar .primary{flex:1;padding:11px}
+main{overflow:auto;padding:22px;display:flex;flex-direction:column;gap:16px}
+.empty{margin:auto;max-width:520px;text-align:center;color:var(--mut)}.empty h2{color:var(--fg);font-size:20px;margin:0 0 8px}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:22px;text-align:left}
+.steps div{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}.steps b{display:block;color:var(--fg);margin-bottom:2px}
+.stages{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stage{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.stage .h{display:flex;justify-content:space-between;font-size:13px}.stage .h span{color:var(--mut)}
+.stage.active{border-color:var(--focus)}.stage.done .h b::after{content:" ✓";color:var(--g)}.stage.skip{opacity:.45}
+.prog{height:6px;border-radius:9px;background:var(--soft);margin-top:10px;overflow:hidden}.prog i{display:block;height:100%;width:0;background:var(--focus);transition:width .3s}
+.stage.done .prog i{background:var(--g)}
+.log{background:var(--panel);border:1px solid var(--line);border-radius:12px}
+.log pre{margin:0;padding:12px 14px;max-height:180px;overflow:auto;font:12px/1.55 var(--font-mono);color:var(--mut);white-space:pre-wrap}
+.stats{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}.stat b{font-size:24px;display:block;line-height:1.2}.stat span{font-size:12px;color:var(--mut)}
+.stat.g b{color:var(--g)}.stat.y b{color:var(--y)}.stat.r b{color:var(--r)}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.note{color:var(--mut);font-size:12px}
+.err{background:#c0392b14;border:1px solid #c0392b55;color:var(--r);border-radius:12px;padding:12px 14px}
+iframe{width:100%;flex:1;min-height:560px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
+.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;z-index:10;padding:16px}
+.modal.show{display:flex}.dlg{background:var(--panel);border-radius:14px;padding:22px;max-width:420px;width:100%;box-shadow:0 20px 60px #0004}
+.dlg h3{margin:0 0 8px;font-size:17px}.dlg p{margin:6px 0;color:var(--mut)}.dlg .big{font-size:28px;font-weight:700;color:var(--fg)}
+.dlg .row{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.hidden{display:none!important}
+@media (max-width:860px){.app{grid-template-columns:1fr;height:auto}aside{border-right:0;padding-bottom:18px}.runbar{position:static;width:auto;padding:0 18px 18px;background:none}
+.stats{grid-template-columns:repeat(3,1fr)!important}.stages,.steps{grid-template-columns:1fr}}

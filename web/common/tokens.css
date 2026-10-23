@@ -1,0 +1,21 @@
+/* 设计变量（design tokens）：颜色、字体、圆角、阴影。
+   三个页面（照片筛选、照片编辑、筛选报告）共用这一份；改配色或字体只改这里。
+   新的视觉方案请先在这里定义变量，再在各页面的 app.css 里引用，不要在页面里写死颜色。 */
+:root{
+  --bg:#f4f3ef;--panel:#fff;--card:var(--panel);--fg:#1c1c1a;--mut:#74726c;--line:#e2e0da;--soft:#efede8;
+  --acc:#1c1c1a;--acc-fg:#fff;--g:#2f8a4c;--y:#b8860b;--r:#c0392b;--focus:#3b6fd8;--sel:var(--focus);
+  --stage:#e8e6e1;--shadow:0 1px 2px #0000000d,0 8px 24px #00000008;
+  --radius-s:7px;--radius:8px;--radius-l:12px;--radius-xl:14px;
+  --font-sans:-apple-system,BlinkMacSystemFont,"Helvetica Neue","Segoe UI","PingFang SC","Hiragino Sans","Microsoft YaHei UI","Microsoft YaHei","Yu Gothic UI","Meiryo",sans-serif;
+  --font-mono:ui-monospace,Menlo,Consolas,monospace;
+}
+/* 按页面语言选字体：中文优先苹方／微软雅黑，日文优先 Hiragino／游ゴシック，避免汉字字形混用 */
+:root:lang(zh-CN){--font-sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue","Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif}
+:root:lang(ja){--font-sans:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Yu Gothic","Meiryo","Segoe UI",sans-serif}
+:root:lang(en){--font-sans:-apple-system,BlinkMacSystemFont,"Helvetica Neue","Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#141413;--panel:#1e1e1c;--fg:#ecebe6;--mut:#9b9992;--line:#33322e;--soft:#272724;--acc:#ecebe6;--acc-fg:#141413;
+  --stage:#0e0e0d;--shadow:none}}
+/* 语言切换（三个页面通用） */
+.langsel{font:inherit;font-size:12px;color:var(--mut);background:transparent;border:1px solid var(--line);border-radius:var(--radius-s);padding:3px 6px;cursor:pointer;width:auto}
+.langsel:hover{color:var(--fg);background:var(--soft)}

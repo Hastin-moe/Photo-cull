@@ -9,7 +9,9 @@ sys.path.insert(0, str(ROOT))
 import cull  # noqa: E402
 
 VER = cull.VERSION
-COMMON = ["cull.py", "gui.py", "editor.py", "editor_ui.py", "requirements.txt", "README.md", "LICENSE", "luts/说明.txt", "tools/setup_env.py"]
+COMMON = ["cull.py", "gui.py", "editor.py", "i18n.py", "requirements.txt", "README.md", "README.en.md", "README.ja.md",
+          "LICENSE", "luts/说明.txt", "tools/setup_env.py"]
+TREES = ["web", "locales"]          # 整个文件夹打包：界面（HTML／CSS／JS）和语言包
 PLATFORM = {
     "Windows": ["安装环境.bat", "启动筛选.bat", "启动编辑.bat", "windows/run.ps1", "windows/setup.ps1"],
     "macOS": ["安装环境.command", "启动筛选.command", "启动编辑.command"],
@@ -29,9 +31,10 @@ QUICK = {
 5. 关闭黑色的命令行窗口即可退出对应的程序。
 
 要求：64 位 Windows 10／11（x64）。ARM 版 Windows 暂不支持。
+界面语言：简体中文／English／日本語，在程序右上角切换（Language switch at the top right）。
 内置 39 个 LUT（Fujifilm GFX 胶片模拟 20 个、Leica Look 19 个，工作空间均为 sRGB），在照片编辑的「风格（LUT）」里直接用。
 设置、缩略图缓存放在 用户文件夹\\.photo-cull；照片的星级、编辑记录写在照片所在文件夹里。
-详细说明见 README.md（可以用记事本或浏览器打开）。
+详细说明见 README.md（English: README.en.md，日本語：README.ja.md；可以用记事本或浏览器打开）。
 
 这是测试版：遇到问题时，把命令行窗口里的文字截图发回来。
 """,
@@ -44,8 +47,9 @@ QUICK = {
 4. 「启动筛选.command」「启动编辑.command」第一次也要右键 →「打开」，以后直接双击。两个可以同时开。
 5. 关闭终端窗口即可退出对应的程序。
 
+界面语言：简体中文／English／日本語，在程序右上角切换（Language switch at the top right）。
 内置 39 个 LUT（Fujifilm GFX 胶片模拟 20 个、Leica Look 19 个，工作空间均为 sRGB），在照片编辑的「风格（LUT）」里直接用。
-详细说明见 README.md。
+详细说明见 README.md（English: README.en.md，日本語：README.ja.md）。
 """,
 }
 
@@ -56,6 +60,7 @@ def build(platform: str) -> Path:
     out.parent.mkdir(exist_ok=True)
     files = COMMON + PLATFORM[platform]
     luts = sorted(p for p in (ROOT / "luts").rglob("*.cube"))
+    luts += sorted(p for d in TREES for p in (ROOT / d).rglob("*") if p.is_file() and not p.name.startswith("."))
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for rel in files:
             src = ROOT / rel

@@ -1,0 +1,95 @@
+<!doctype html><html lang="__LANG__"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="cull.title">照片筛选</title>
+<link rel="stylesheet" href="/static/common/tokens.css?v=__VER__">
+<link rel="stylesheet" href="/static/cull/app.css?v=__VER__">
+<script>window.I18N=__I18N__;</script>
+<script src="/static/common/i18n.js?v=__VER__"></script>
+</head><body>
+<header><div class="brand"><h1 data-i18n="cull.title">照片筛选</h1><span class="ver">photo-cull __VER__</span></div>
+ <div class="brand"><a class="xlink" data-href="/open/edit" target="_blank" rel="noopener" data-i18n-title="cull.open_edit_tip"><span data-i18n="cull.open_edit">照片编辑</span> ↗</a>
+  <select class="langsel" id="lang" aria-label="Language"></select><span class="pill" id="pill" data-i18n="cull.pill.ready">就绪</span></div></header>
+<div class="app">
+<aside>
+ <section class="card"><p class="ct" data-i18n="cull.folder.title">照片文件夹</p>
+  <div class="folder"><input type="text" id="folder" data-i18n-placeholder="cull.folder.placeholder" spellcheck="false"><button id="pick" data-i18n="common.choose">选择…</button></div>
+  <label class="chk"><input type="checkbox" id="recursive"><span data-i18n="cull.folder.recursive">包含子文件夹</span></label>
+  <p class="hint" style="margin:4px 0 8px" data-i18n="cull.folder.pair_hint"></p>
+  <button id="loadPrev" style="width:100%" data-i18n="cull.folder.load_prev">载入这个文件夹上次的结果</button>
+ </section>
+ <section class="card"><p class="ct" data-i18n="cull.mode.title">筛选方式</p>
+  <div class="seg" data-mode><button data-ai="0" data-i18n="cull.mode.local">仅本地筛选</button><button data-ai="1" data-i18n="cull.mode.ai">本地＋AI 细评</button></div>
+  <p class="hint" id="modeHint" style="margin:10px 0 0"></p>
+  <div id="aiBox">
+   <div class="field"><label data-i18n="cull.ai.provider">评价模型</label><div class="seg three" id="provSeg"></div></div>
+   <div class="field" id="baseBox"><label data-i18n="cull.ai.base_url">接口地址（OpenAI 兼容）</label><input type="text" id="base_url" spellcheck="false" autocomplete="off" placeholder="https://…/v1">
+    <span class="hint" data-i18n="cull.ai.base_url_hint"></span></div>
+   <div class="field"><label data-i18n="cull.ai.model">模型名称</label><select id="modelSel"></select>
+    <input type="text" id="model" spellcheck="false" autocomplete="off" style="margin-top:6px" data-i18n-placeholder="cull.ai.model_custom_ph">
+    <span class="hint" id="modelHint"></span></div>
+   <div class="field"><label id="keyLabel">API Key</label><input type="password" id="api_key" autocomplete="off" spellcheck="false">
+    <span class="hint" id="keyHint"></span></div>
+   <label class="chk"><input type="checkbox" id="remember_key"><span><span data-i18n="cull.ai.remember">记住在这台电脑</span><small data-i18n="cull.ai.remember_hint"></small></span></label>
+   <label class="chk"><input type="checkbox" id="ai_alts"><span><span data-i18n="cull.ai.alts">连拍备选也细评</span><small data-i18n="cull.ai.alts_hint"></small></span></label>
+   <p class="hint" data-i18n="cull.ai.lang_hint"></p>
+  </div>
+ </section>
+ <section class="card"><p class="ct" data-i18n="cull.out.title">输出</p>
+  <label class="chk"><input type="checkbox" id="xmp"><span><span data-i18n="cull.out.xmp">写入星级与色标</span><small data-i18n="cull.out.xmp_hint"></small></span></label>
+  <label class="chk"><input type="checkbox" id="jpeg_embed"><span><span data-i18n="cull.out.embed">同步写入 JPEG 内嵌 XMP</span><small data-i18n="cull.out.embed_hint"></small></span></label>
+  <label class="chk"><input type="checkbox" id="xmp_all"><span><span data-i18n="cull.out.xmp_all">单独的 JPEG／HEIC 也写边车 XMP</span><small data-i18n="cull.out.xmp_all_hint"></small></span></label>
+  <label class="chk"><input type="checkbox" id="dry_run"><span><span data-i18n="cull.out.dry">演练模式</span><small data-i18n="cull.out.dry_hint"></small></span></label>
+ </section>
+ <section class="card"><p class="ct" data-i18n="cull.org.title">整理输出</p>
+  <label class="chk"><input type="checkbox" id="org"><span><span data-i18n="cull.org.enable">评分后整理到输出文件夹</span><small data-i18n="cull.org.enable_hint"></small></span></label>
+  <div id="orgBox">
+   <div class="field"><label data-i18n="cull.org.dir">输出文件夹</label><div class="folder"><input type="text" id="org_dir" data-i18n-placeholder="cull.org.dir_ph" spellcheck="false"><button id="pickOrg" data-i18n="common.choose">选择…</button></div></div>
+   <div class="field"><label data-i18n="cull.org.mode">方式</label><div class="seg" id="orgMode"><button data-m="0" data-i18n="cull.org.copy">复制</button><button data-m="1" data-i18n="cull.org.move">移动</button></div>
+    <span class="hint" id="orgHint" style="margin-top:6px"></span></div>
+   <label class="chk"><input type="checkbox" id="org_result"><span><span data-i18n="cull.org.by_result">分成 保留／淘汰 两个文件夹</span><small data-i18n="cull.org.by_result_hint"></small></span></label>
+   <label class="chk"><input type="checkbox" id="org_format"><span data-i18n="cull.org.by_format">每个里面再分 JPEG／RAW</span></label>
+   <label class="chk"><input type="checkbox" id="org_rename"><span><span data-i18n="cull.org.rename">重命名为 星级_机型_原文件名</span><small data-i18n="cull.org.rename_hint"></small></span></label>
+   <p class="hint" id="orgEx" style="margin:6px 0 0;font-family:var(--font-mono);word-break:break-all;white-space:pre-wrap"></p>
+  </div>
+ </section>
+ <section class="card"><details><summary data-i18n="cull.adv.title">高级参数</summary>
+  <div class="grid2" style="margin-top:12px">
+   <div class="field"><label data-i18n="cull.adv.burst_gap">连拍间隔（秒）</label><input type="number" id="burst_gap" step="1" min="0"></div>
+   <div class="field"><label data-i18n="cull.adv.scene_gap">同场景间隔（秒）</label><input type="number" id="scene_gap" step="5" min="0"></div>
+   <div class="field"><label data-i18n="cull.adv.similarity">同场景相似度</label><input type="number" id="similarity" step="0.05" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.blur_warn">模糊提示阈值</label><input type="number" id="blur_warn" step="0.01" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.blur_reject">模糊淘汰阈值</label><input type="number" id="blur_reject" step="0.01" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.clip_high">高光溢出提示</label><input type="number" id="clip_high" step="0.01" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.clip_low">暗部死黑提示</label><input type="number" id="clip_low" step="0.05" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.workers">并行数</label><input type="number" id="workers" step="1" min="1" max="16"></div>
+  </div>
+  <p class="hint" style="margin-top:10px" data-i18n="cull.adv.hint"></p>
+ </details></section>
+ <div class="runbar"><button class="primary" id="run" data-i18n="cull.run">开始筛选</button><button id="cancel" class="hidden" data-i18n="common.cancel">取消</button></div>
+</aside>
+<main id="main">
+ <div class="empty" id="empty"><h2 data-i18n="cull.empty.title">选一个文件夹，开始筛选</h2>
+  <div data-i18n="cull.empty.body"></div>
+  <div class="steps"><div><b data-i18n="cull.empty.s1">1 · 本地分析</b><span data-i18n="cull.empty.s1_body"></span></div>
+   <div><b data-i18n="cull.empty.s2">2 · AI 细评</b><span data-i18n="cull.empty.s2_body"></span></div>
+   <div><b data-i18n="cull.empty.s3">3 · 复核与整理</b><span data-i18n="cull.empty.s3_body"></span></div></div></div>
+ <div id="work" class="hidden" style="display:flex;flex-direction:column;gap:16px;flex:1">
+  <div class="stages">
+   <div class="stage" id="st-analyze"><div class="h"><b data-i18n="cull.stage.analyze">本地分析</b><span></span></div><div class="prog"><i></i></div></div>
+   <div class="stage" id="st-ai"><div class="h"><b id="aiStageName" data-i18n="cull.stage.ai">AI 细评</b><span></span></div><div class="prog"><i></i></div></div>
+   <div class="stage" id="st-xmp"><div class="h"><b data-i18n="cull.stage.write">写入结果</b><span></span></div><div class="prog"><i></i></div></div>
+  </div>
+  <div class="err hidden" id="err"></div>
+  <div id="done" class="hidden" style="display:flex;flex-direction:column;gap:14px;flex:1">
+   <div class="stats" id="stats"></div>
+   <div class="actions"><button class="primary" id="openReport" data-i18n="cull.done.open_report">在浏览器中打开报告</button><button id="revealReport"></button><button id="revealPhotos" data-i18n="cull.done.open_photos">打开照片文件夹</button><button id="orgNow" data-i18n="cull.done.org_now">按当前星级整理</button><button id="revealOrg" class="hidden" data-i18n="cull.done.open_org">打开整理输出</button><span class="note" id="doneNote"></span></div>
+   <iframe id="report" data-i18n-title="cull.done.report_title"></iframe>
+  </div>
+  <details class="log" id="logBox"><summary style="padding:10px 14px" data-i18n="cull.log">运行日志</summary><pre id="log"></pre></details>
+ </div>
+</main></div>
+<div class="modal" id="modal"><div class="dlg"><h3 data-i18n="cull.confirm.title">确认调用 AI 细评</h3>
+ <p id="mLine"></p>
+ <p id="mTokens"></p><p class="hint" data-i18n="cull.confirm.cache_hint"></p>
+ <div class="row"><button id="mNo" data-i18n="cull.confirm.skip">跳过细评</button><button class="primary" id="mYes" data-i18n="cull.confirm.go">继续</button></div></div></div>
+<script src="/static/cull/app.js?v=__VER__"></script>
+</body></html>

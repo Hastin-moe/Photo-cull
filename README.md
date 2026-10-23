@@ -1,9 +1,13 @@
 # 照片工具 photo-cull
 
+**简体中文** · [English](README.en.md) · [日本語](README.ja.md)
+
 工具分成两个**独立的程序**，各有一个启动文件，可以只开一个，也可以同时开着互不影响：
 
-- **照片筛选**（双击 `启动筛选.command`）：先在本地做技术筛选，包括对焦、模糊、曝光、人脸与闭眼检测，以及连拍和同场景重拍分组。入围的照片可以再交给 **Claude、ChatGPT、Grok 或 Gemini** 做审美细评。最后把**星级和色标**写进 XMP，Lightroom Classic 和 Capture One 都能读到，同时生成一份可以直接操作的网页报告。
+- **照片筛选**（双击 `启动筛选.command`）：先在本地做技术筛选，包括对焦、模糊、曝光、人脸与闭眼检测，以及连拍和同场景重拍分组。入围的照片可以再交给 **Claude、ChatGPT、Grok、Gemini、DeepSeek**，或任何 OpenAI 兼容的视觉模型（通义千问、Kimi、豆包、OpenRouter、本地 Ollama 等）做审美细评。最后把**星级和色标**写进 XMP，Lightroom Classic 和 Capture One 都能读到，同时生成一份可以直接操作的网页报告。
 - **照片编辑**（双击 `启动编辑.command`，基础版）：对整张画面做调整，包括曲线、直方图和波形图监看；可以套用 `.cube` LUT 和 Lightroom／Photoshop 的 XMP 预设，最后导出 JPEG 或 16 位 TIFF。支持徕卡 DNG、松下 DNG、索尼全部 ARW、富士 RAF。
+
+**界面语言**：简体中文、English、日本語，在两个程序右上角切换（两个程序同步）。报告页、运行日志和 AI 评语都跟随所选语言；第一次打开时按浏览器语言自动选择。
 
 **RAW＋JPEG 自动配对**：同一文件夹里同名的 RAW（DNG、ARW、RAF 等）和 JPEG 会被当成一张照片来评分。打星时两个文件同步标记，删除时两个文件一起删除。
 
@@ -54,7 +58,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-从旧版本升级后，第一次启动请在终端里再执行一次 `.venv/bin/pip install -r requirements.txt`。新版本增加了 `openai` 和 `send2trash` 两个依赖。
+从旧版本升级后，启动文件会自动补装新增的依赖。
 
 ## 图形界面（推荐）
 
@@ -65,8 +69,9 @@ python3 -m venv .venv
 
 1. 点「选择…」，挑一个照片文件夹。如果这个文件夹之前筛选过，可以点「载入这个文件夹上次的结果」，直接继续复核。
 2. 选「仅本地筛选」，或者「本地＋AI 细评」。选细评时还要：
-   - 选模型：Claude、ChatGPT、Grok 或 Gemini；
-   - 填写对应服务商的 API Key。
+   - 选服务商：Claude、ChatGPT、Grok、Gemini、DeepSeek 或「自定义」；
+   - 从下拉菜单选模型（每个都标了推荐／便宜／最强），也可以选「其他」手动填写；
+   - 填写对应服务商的 API Key；选「自定义」时还要填接口地址。
 3. 第一次使用建议勾上「演练模式」，先看看判断准不准。
    需要的话勾上「整理输出」，评分后自动分文件夹、重命名（见下文「整理输出」）。
 4. 点「开始筛选」。细评开始前会弹窗显示张数和预计用量，你确认后才会调用。
@@ -79,18 +84,29 @@ python3 -m venv .venv
 界面只在本机运行（127.0.0.1），不对外开放。每个程序关掉自己的终端窗口即可退出。
 如果 macOS 提示“无法打开，因为来自身份不明的开发者”：右键点启动文件 → 打开 → 再点一次「打开」。
 
-## 四家模型
+## AI 细评可选的模型
 
-| 模型 | 默认模型名 | API Key 从哪申请 | 环境变量 |
+| 服务商 | 可选模型（第一个为默认） | API Key 从哪申请 | 环境变量 |
 |---|---|---|---|
-| Claude | `claude-sonnet-5-5`（另有 haiku、opus） | console.anthropic.com | `ANTHROPIC_API_KEY` |
-| ChatGPT | `gpt-5.5`（另有 gpt-6-luna、gpt-6-sol） | platform.openai.com | `OPENAI_API_KEY` |
+| Claude | `claude-sonnet-5-5`（推荐）、`claude-haiku-5-5`（便宜）、`claude-opus-5-5`（更强）、`claude-fable-5-1`（最强、最贵） | console.anthropic.com | `ANTHROPIC_API_KEY` |
+| ChatGPT | `gpt-6.1-sol`（推荐）、`gpt-6-luna`（便宜）、`gpt-6-astra`（最强）、`gpt-5.5`（上一代） | platform.openai.com | `OPENAI_API_KEY` |
 | Grok | `grok-4.7` | console.x.ai | `XAI_API_KEY` |
-| Gemini | `gemini-3.8-flash`（另有 gemini-3.5-flash-lite、gemini-4-argon） | aistudio.google.com | `GEMINI_API_KEY`（或 `GOOGLE_API_KEY`） |
+| Gemini | `gemini-3.8-flash`（推荐）、`gemini-3.6-flash`、`gemini-3.5-flash-lite`（便宜）、`gemini-4-argon`（最强） | aistudio.google.com | `GEMINI_API_KEY`（或 `GOOGLE_API_KEY`） |
+| DeepSeek | `deepseek-flash` | platform.deepseek.com | `DEEPSEEK_API_KEY` |
+| 自定义 | 自己填写 | 各服务商 | `PHOTO_CULL_CUSTOM_API_KEY` |
 
-- 模型名可以在界面里直接改成服务商提供的其他名称。
+- 列表核对于 2026 年 10 月，只列能看图的模型。服务商出了新模型，选「其他（手动填写）」直接填名字即可。
+- **DeepSeek**：目前只有 `deepseek-flash` 支持图片输入（`deepseek-v4-pro` 只支持文字），所以只有这一个选项。
+- **自定义（OpenAI 兼容）**：填接口地址和模型名，就能接任何支持 Chat Completions 图片输入的服务，例如：
+  - 通义千问 `https://dashscope.aliyuncs.com/compatible-mode/v1`（模型如 `qwen-vl-max`）
+  - Kimi `https://api.moonshot.cn/v1`
+  - 豆包（火山方舟）`https://ark.cn-beijing.volces.com/api/v3`
+  - OpenRouter `https://openrouter.ai/api/v1`
+  - 本机的 Ollama `http://127.0.0.1:11434/v1`、LM Studio `http://127.0.0.1:1234/v1`（不需要 Key）
+
+  模型名和地址以各家文档为准。DeepSeek 和自定义接口直接走 HTTP，不需要额外安装 SDK。
 - API Key 都是按量付费，和网页版订阅（Claude Pro、ChatGPT Plus 等）无关。
-- 换模型重新评分时，已经评过的照片不会重复收费：缓存按「服务商＋模型＋图片」分别记录。
+- 已经评过的照片不会重复收费：缓存按「服务商＋模型＋语言＋图片」分别记录。换了界面语言会重新细评一次，好让评语换成新语言。
 - 如果开头连续 3 张调用失败（Key 错误、模型名不对、余额不足等），程序会自动停止细评，避免白白浪费。
 
 ## 命令行
@@ -117,6 +133,18 @@ export XAI_API_KEY="…"
 # Gemini 细评
 export GEMINI_API_KEY="…"
 .venv/bin/python cull.py "照片文件夹" --ai --provider gemini
+
+# DeepSeek 细评
+export DEEPSEEK_API_KEY="…"
+.venv/bin/python cull.py "照片文件夹" --ai --provider deepseek
+
+# 任意 OpenAI 兼容接口（例：通义千问）
+export PHOTO_CULL_CUSTOM_API_KEY="…"
+.venv/bin/python cull.py "照片文件夹" --ai --provider custom --model qwen-vl-max \
+    --base-url https://dashscope.aliyuncs.com/compatible-mode/v1
+
+# 用英文输出报告、日志和 AI 评语（zh-CN／en／ja）
+.venv/bin/python cull.py "照片文件夹" --lang en
 
 # 写完星级后，把淘汰的照片（含配对文件）移到废纸篓
 .venv/bin/python cull.py "照片文件夹" --trash-rejects
@@ -163,7 +191,7 @@ export GEMINI_API_KEY="…"
 
 评分完成后，可以把照片整理到一个输出文件夹（不填路径时是 `照片文件夹/整理输出`）。三个选项都可以单独开关：
 
-- **分成 保留／淘汰**：被标为拒绝（X）的进「淘汰」，其余都进「保留」。
+- **分成 保留／淘汰**：被标为拒绝（X）的进「淘汰」，其余都进「保留」。文件夹名跟随整理时的界面语言（英文为 `Keep`／`Rejected`，日文为「採用」「不採用」）；之后在报告里改星级同步时，沿用当时的名字。
 - **再分 JPEG／RAW**：每个里面再按格式分开；HEIC／PNG 等也放进 JPEG。
 - **重命名**：在原文件名前加上「星级_机型_」，机型取自 EXIF，比如
   `4_ILCE-1M2_DSC01234.ARW`、`3_LEICA-M11-D_L1003467.DNG`、`X_X-T5_DSCF0001.RAF`。
@@ -202,8 +230,10 @@ export GEMINI_API_KEY="…"
 | `--no-xmp` | 只要报告 |
 | `--no-jpeg-embed` | 不改 JPEG 文件，只写 RAW 的边车 XMP |
 | `--ai` | 对入围照片做 AI 细评 |
-| `--provider claude／openai／grok／gemini` | 用哪家模型 |
+| `--provider claude／openai／grok／gemini／deepseek／custom` | 用哪家模型 |
 | `--model` | 指定模型名 |
+| `--base-url` | `--provider custom` 时的接口地址 |
+| `--lang zh-CN／en／ja` | 报告、日志、AI 评语的语言（默认跟随界面设置或系统语言） |
 | `--ai-alts` | 连拍备选也送去细评（更贵） |
 | `--trash-rejects` | 把淘汰的照片（含配对文件）移到废纸篓 |
 | `--organize [输出文件夹]` | 评分后整理到输出文件夹；不写路径时为 `照片文件夹/整理输出`，相对路径也以照片文件夹为起点 |
@@ -289,10 +319,12 @@ export GEMINI_API_KEY="…"
 
 ## 开发记录
 
+源码采用前后端分离：Python（`cull.py`、`editor.py`、`gui.py`）只负责处理照片和提供接口，界面是 `web/` 里的 HTML／CSS／JS，文字都在 `locales/` 语言包里。改界面不用碰 Python，改文字不用碰代码。结构说明见 [工作记录](docs/工作记录.md)，界面设计方向见 [GUI 设计方向](docs/GUI设计方向.md)。
+
 - [更新日志](CHANGELOG.md)：各版本改了什么。
 - [工作记录](docs/工作记录.md)：源码结构、实现要点、问题与修复、后续计划。
 - [测试计划](docs/测试计划.md)：待做的实机测试。
 
 ## 许可证与贡献
 
-代码以 [MIT 许可证](LICENSE) 开源；`luts/` 里的 LUT 文件版权归原作者，见 `luts/说明.txt`。欢迎提交改进，流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+代码以 [MIT 许可证](LICENSE) 开源；`luts/` 里的 LUT 收集自公开渠道，见 `luts/说明.txt`。欢迎提交改进（包括新语言的翻译），流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。

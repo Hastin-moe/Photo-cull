@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """照片筛选工具 photo-cull
 
-本地技术评分（对焦／模糊／曝光／人脸与闭眼／连拍分组）＋可选 AI 审美细评（Claude／ChatGPT／Grok）。
+本地技术评分（对焦／模糊／曝光／人脸与闭眼／连拍分组）＋可选 AI 审美细评
+（Claude／ChatGPT／Grok／Gemini／DeepSeek／任意 OpenAI 兼容接口）。
 同名 RAW＋JPEG 自动配对，一起评分、同步标记、同步删除。
 星级／色标写成 XMP（RAW 用边车文件，JPEG 写入文件内嵌 XMP，只改元数据、不动画面数据），并生成网页报告。
 
@@ -31,16 +32,20 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import i18n  # noqa: E402
+from i18n import t  # noqa: E402
+
 try:
     import cv2
 except ImportError:  # pragma: no cover
-    sys.exit("缺少 opencv：pip install -r requirements.txt")
+    sys.exit(t("cull.msg.need_opencv"))
 
-VERSION = "1.5-beta"
+VERSION = "1.6-beta"
 RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2", ".pef", ".3fr", ".iiq"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".heif", ".hif", ".webp"}
 JPEG_EXT = {".jpg", ".jpeg"}
-TRASH_DIR = "_待删除"
+TRASH_DIR = "_待删除"     # 没有 send2trash 时的退路文件夹（名字固定，不随界面语言变化）
 WORK_SIDE = 1600   # 技术分析用的长边像素
 FOCUS_SIDE = 2400  # 对焦检测用的长边像素（统一尺度，避免高像素机身在 1:1 下普遍“显软”）
 SIGS: dict = {}    # 画面签名（用于同场景分组），不写入报告
@@ -151,10 +156,10 @@ class TiffRaw:
         elif head[:2] == b"MM":
             self.e = ">"
         else:
-            raise ValueError("不是 TIFF 结构的 RAW")
+            raise ValueError(t("cull.parse.not_tiff"))
         magic, first = _st.unpack(self.e + "HI", head[2:8])
         if magic != 42:
-            raise ValueError("不支持的 TIFF 变体")
+            raise ValueError(t("cull.parse.tiff_variant"))
         self.size = path.stat().st_size
         self.ifds = []          # [(kind, {tag: value})]
         self._walk(first, "ifd0", set(), 0)
@@ -170,14 +175,14 @@ class TiffRaw:
 
     def _read(self, off, n):
         if off < 0 or off + n > self.size:
-            raise ValueError("偏移越界")
+            raise ValueError(t("cull.parse.offset"))
         self.f.seek(off)
         return self.f.read(n)
 
     def _ifd(self, off):
         n = _st.unpack(self.e + "H", self._read(off, 2))[0]
         if n > 1000:
-            raise ValueError("IFD 异常")
+            raise ValueError(t("cull.parse.ifd"))
         raw = self._read(off + 2, n * 12 + 4)
         tags = {}
         for i in range(n):
@@ -367,15 +372,15 @@ def raf_jpeg(path: Path) -> bytes:
     with open(path, "rb") as f:
         head = f.read(100)
         if not head.startswith(b"FUJIFILMCCD-RAW"):
-            raise ValueError("不是富士 RAF 文件")
+            raise ValueError(t("cull.parse.not_raf"))
         off, ln = _st.unpack(">II", head[84:92])
         size = path.stat().st_size
         if not (100 <= off < size and 1000 < ln <= size - off):
-            raise ValueError("RAF 内嵌预览位置异常")
+            raise ValueError(t("cull.parse.raf_preview_pos"))
         f.seek(off)
         data = f.read(ln)
     if data[:2] != b"\xff\xd8":
-        raise ValueError("RAF 内嵌预览不是 JPEG")
+        raise ValueError(t("cull.parse.raf_preview_jpeg"))
     return data
 
 
@@ -406,7 +411,7 @@ def load_preview(path: Path, min_side: int | None = None) -> Image.Image:
         try:
             import rawpy
         except ImportError:
-            raise RuntimeError("这个 RAW 没有可直接读取的预览，需要 rawpy：pip install rawpy")
+            raise RuntimeError(t("cull.msg.need_rawpy"))
         with rawpy.imread(str(path)) as raw:
             img = None
             try:
@@ -427,7 +432,7 @@ def load_preview(path: Path, min_side: int | None = None) -> Image.Image:
                 img = Image.fromarray(rgb)  # postprocess 已处理方向
         return img.convert("RGB")
     if ext in {".heic", ".heif", ".hif"} and not _ensure_heif():
-        raise RuntimeError("读取 HEIC/HIF 需要 pillow-heif：pip install pillow-heif")
+        raise RuntimeError(t("cull.msg.need_heif"))
     img, dims = open_scaled(path, min_side)
     img = ImageOps.exif_transpose(img)
     return _with_full(img.convert("RGB"), dims)
@@ -709,25 +714,56 @@ def pct_rank(values: list[float], v: float) -> float:
     return sum(1 for x in values if x <= v) / len(values)
 
 
+# 问题标记在 results.json 里保存为代码（blur、clip_high:0.052…），显示时按当前语言翻译。
+# 1.5 及以前保存的是中文句子，载入旧结果时转换成代码。
+FLAG_LEGACY = [(r"^失焦或模糊$", "blur"), (r"^可能失焦／抖动$", "soft"), (r"^严重欠曝$", "under"),
+               (r"^严重过曝$", "over"), (r"^高光溢出 (\d+)%$", "clip_high"), (r"^暗部死黑 (\d+)%$", "clip_low"),
+               (r"^可能闭眼／侧脸$", "eyes"), (r"^星级未写入：(.*)$", "xmp_fail")]
+
+
+def flag_code(f: str) -> str:
+    for pat, code in FLAG_LEGACY:
+        m = re.match(pat, f)
+        if m:
+            if code in ("clip_high", "clip_low"):
+                return f"{code}:{int(m.group(1)) / 100:.3f}"
+            return f"{code}:{m.group(1)}" if code == "xmp_fail" else code
+    return f
+
+
+def flag_text(code: str, lang: str | None = None) -> str:
+    name, _, val = code.partition(":")
+    if name in ("clip_high", "clip_low"):
+        try:
+            return t("flag." + name, lang, pct=f"{float(val):.0%}")
+        except ValueError:
+            pass
+    if name == "xmp_fail":
+        return t("flag.xmp_fail", lang, msg=val)
+    key = "flag." + name
+    text = t(key, lang)
+    return code if text == key else text
+
+
 def score_local(photos: list[Photo], args):
     ok = [p for p in photos if not p.error]
     focus_vals = [-p.blur for p in ok]
     for p in ok:
         flags = []
         if p.blur >= args.blur_reject:
-            flags.append("失焦或模糊")
+            flags.append("blur")
         elif p.blur >= args.blur_warn:
-            flags.append("可能失焦／抖动")
+            flags.append("soft")
         if p.mean_luma < 18:
-            flags.append("严重欠曝")
+            flags.append("under")
         elif p.mean_luma > 238:
-            flags.append("严重过曝")
+            flags.append("over")
         if p.clip_high > args.clip_high:
-            flags.append(f"高光溢出 {p.clip_high:.0%}")
+            flags.append(f"clip_high:{p.clip_high:.3f}")
         if p.clip_low > args.clip_low:
-            flags.append(f"暗部死黑 {p.clip_low:.0%}")
+            flags.append(f"clip_low:{p.clip_low:.3f}")
         if p.eyes_missing:
-            flags.append("可能闭眼／侧脸")
+            flags.append("eyes")
         p.flags = flags
 
         sharp_part = pct_rank(focus_vals, -p.blur)                   # 0..1，本批中越锐越高
@@ -740,7 +776,7 @@ def score_local(photos: list[Photo], args):
     for p in ok:
         if p.group not in best or p.local_score > best[p.group].local_score:
             best[p.group] = p
-    hard = {"失焦或模糊", "严重欠曝", "严重过曝"}
+    hard = {"blur", "under", "over"}
     for p in ok:
         p.group_best = best[p.group] is p
         if any(f in hard for f in p.flags):
@@ -754,22 +790,51 @@ def score_local(photos: list[Photo], args):
             p.tier = "error"
 
 
-# ───────────────────────── AI 细评（Claude／ChatGPT／Grok） ─────────────────────────
-
+# ───────────────────────── AI 细评 ─────────────────────────
+# 每家：显示名、环境变量、默认模型、可选模型（notes 是界面里的简短说明，对应语言包 cull.model_note.*）。
+# api：messages＝Anthropic，responses＝OpenAI Responses API，chat＝OpenAI 兼容 Chat Completions，gemini＝Gemini REST。
+# 模型列表核对于 2026-10：只列能看图的模型；用户也可以手动填写列表外的模型名称。
 PROVIDERS = {
-    "claude": {"name": "Claude", "env": "ANTHROPIC_API_KEY", "default": "claude-sonnet-5-5",
-               "models": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
-               "console": "console.anthropic.com"},
-    "openai": {"name": "ChatGPT", "env": "OPENAI_API_KEY", "default": "gpt-5.5", "base_url": None,
-               "models": ["gpt-5.5", "gpt-6-luna", "gpt-6-sol"], "console": "platform.openai.com"},
-    "grok": {"name": "Grok", "env": "XAI_API_KEY", "default": "grok-4.7", "base_url": "https://api.x.ai/v1",
-             "models": ["grok-4.7"], "console": "console.x.ai"},
-    "gemini": {"name": "Gemini", "env": "GEMINI_API_KEY", "alt_env": "GOOGLE_API_KEY", "default": "gemini-3.8-flash",
-               "models": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"], "console": "aistudio.google.com"},
+    "claude": {"name": "Claude", "env": "ANTHROPIC_API_KEY", "default": "claude-sonnet-5-5", "api": "messages",
+               "models": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-fable-5-1"],
+               "notes": {"claude-sonnet-5-5": "recommended", "claude-haiku-5-5": "cheap", "claude-opus-5-5": "high",
+                         "claude-fable-5-1": "top"},
+               "console": "console.anthropic.com", "key_ph": "sk-ant-…"},
+    "openai": {"name": "ChatGPT", "env": "OPENAI_API_KEY", "default": "gpt-6.1-sol", "api": "responses", "base_url": None,
+               "models": ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.5"],
+               "notes": {"gpt-6.1-sol": "recommended", "gpt-6-luna": "cheap", "gpt-6-astra": "top", "gpt-5.5": "previous"},
+               "console": "platform.openai.com", "key_ph": "sk-…"},
+    "grok": {"name": "Grok", "env": "XAI_API_KEY", "default": "grok-4.7", "api": "responses", "base_url": "https://api.x.ai/v1",
+             "models": ["grok-4.7"], "notes": {"grok-4.7": "recommended"}, "console": "console.x.ai", "key_ph": "xai-…"},
+    "gemini": {"name": "Gemini", "env": "GEMINI_API_KEY", "alt_env": "GOOGLE_API_KEY", "default": "gemini-3.8-flash", "api": "gemini",
+               "models": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-4-argon"],
+               "notes": {"gemini-3.8-flash": "recommended", "gemini-3.6-flash": "balanced", "gemini-3.5-flash-lite": "cheap",
+                         "gemini-4-argon": "top"},
+               "console": "aistudio.google.com", "key_ph": "AIza…"},
+    # DeepSeek：只有 deepseek-flash 能看图（deepseek-v4-pro 只支持文字），见 api-docs.deepseek.com/guides/vision
+    "deepseek": {"name": "DeepSeek", "env": "DEEPSEEK_API_KEY", "default": "deepseek-flash", "api": "chat",
+                 "base_url": "https://api.deepseek.com", "models": ["deepseek-flash"], "notes": {"deepseek-flash": "ds_vision"},
+                 "console": "platform.deepseek.com", "key_ph": "sk-…"},
+    # 自定义：任意 OpenAI 兼容的视觉模型（通义千问、Kimi、豆包、OpenRouter、本地 Ollama／LM Studio 等），地址和模型名由用户填写
+    "custom": {"name": "Custom", "env": "PHOTO_CULL_CUSTOM_API_KEY", "default": "", "api": "chat", "base_url": None,
+               "models": [], "notes": {}, "console": "", "key_ph": "sk-…"},
 }
 GEMINI_BASE = os.environ.get("PHOTO_CULL_GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta")
+CUSTOM_BASE: dict = {}      # 图形界面／命令行传入的自定义接口地址 {"custom": url}
 
-AI_PROMPT = """你是一位严格但公正的资深摄影编辑，正在帮摄影师从一批照片里挑选作品。
+
+def env_key(provider: str) -> str:
+    info = PROVIDERS[provider]
+    return os.environ.get(info["env"], "") or (os.environ.get(info["alt_env"], "") if info.get("alt_env") else "")
+
+
+GENRES = ("portrait", "street", "landscape", "architecture", "event", "other")
+GENRE_LEGACY = {"人像": "portrait", "扫街": "street", "风景": "landscape", "建筑": "architecture", "活动": "event", "其他": "other"}
+
+# 细评提示词：按界面语言选择，评语和改进点用同一种语言写；题材统一用英文代码，界面再翻译。
+# {exif}／{flags} 用 str.replace 填入（不用 format，免得要把 JSON 的花括号写两遍）。
+AI_PROMPTS = {
+    "zh-CN": """你是一位严格但公正的资深摄影编辑，正在帮摄影师从一批照片里挑选作品。
 请评价这张照片，题材可能是人像、扫街人文、风景建筑或活动连拍，先自行判断题材，再用该题材的标准评价。
 
 拍摄信息：{exif}
@@ -783,8 +848,48 @@ AI_PROMPT = """你是一位严格但公正的资深摄影编辑，正在帮摄�
 - technical 技术质量（对焦、曝光、噪点、水平）
 
 stars 给 1-5 星：5=作品级，4=精选，3=可用，2=一般，1=建议淘汰。
+genre 只能是 portrait、street、landscape、architecture、event、other 之一。
 只输出一个 JSON 对象，不要其他文字：
-{{"genre":"人像|扫街|风景|建筑|活动|其他","scores":{{"composition":0,"light":0,"subject":0,"moment":0,"technical":0}},"overall":0,"stars":0,"keep":true,"comment":"一句中文评语，指出最大优点","issues":["最多3条可改进点"]}}"""
+{"genre":"portrait","scores":{"composition":0,"light":0,"subject":0,"moment":0,"technical":0},"overall":0,"stars":0,"keep":true,"comment":"一句中文评语，指出最大优点","issues":["最多3条可改进点，用中文"]}""",
+    "en": """You are a strict but fair senior photo editor helping a photographer pick the best frames from a shoot.
+Evaluate this photo. It may be a portrait, street photography, landscape/architecture or an event/burst sequence: first decide the genre, then judge it by that genre's standards.
+
+Capture info: {exif}
+Local technical checks: {flags}
+
+Score each dimension from 1 to 10 (integers):
+- composition: composition and visual order
+- light: light and color
+- subject: subject and expression (portraits: expression and gesture; street: moment and story; landscape: subject and atmosphere)
+- moment: timing / decisive moment
+- technical: technical quality (focus, exposure, noise, level horizon)
+
+stars from 1 to 5: 5 = portfolio, 4 = pick, 3 = usable, 2 = weak, 1 = reject.
+genre must be one of portrait, street, landscape, architecture, event, other.
+Output one JSON object only, no other text:
+{"genre":"portrait","scores":{"composition":0,"light":0,"subject":0,"moment":0,"technical":0},"overall":0,"stars":0,"keep":true,"comment":"One sentence in English naming the photo's biggest strength","issues":["Up to 3 improvement points, in English"]}""",
+    "ja": """あなたは厳しくも公正なベテランの写真編集者で、撮影した写真の中から作品を選ぶ手伝いをしています。
+この写真を評価してください。ジャンルはポートレート、スナップ、風景・建築、イベント・連写などの可能性があります。まずジャンルを判断し、そのジャンルの基準で評価してください。
+
+撮影情報：{exif}
+ローカルの技術チェック：{flags}
+
+評価項目（1〜10 の整数）：
+- composition 構図と画面の秩序
+- light 光と色
+- subject 主題と表現（ポートレートは表情や仕草、スナップは瞬間と物語、風景は主題と雰囲気）
+- moment タイミング／決定的瞬間
+- technical 技術的な品質（ピント、露出、ノイズ、水平）
+
+stars は 1〜5：5＝作品レベル、4＝セレクト、3＝使える、2＝いまひとつ、1＝不採用を推奨。
+genre は portrait、street、landscape、architecture、event、other のいずれか。
+JSON オブジェクトを 1 つだけ出力し、ほかの文章は書かないでください：
+{"genre":"portrait","scores":{"composition":0,"light":0,"subject":0,"moment":0,"technical":0},"overall":0,"stars":0,"keep":true,"comment":"最大の長所を述べる日本語の一文","issues":["改善点を最大3つ、日本語で"]}""",
+}
+
+
+def ai_prompt(exif: str, flags: str, lang: str | None = None) -> str:
+    return AI_PROMPTS.get(lang or i18n.current(), AI_PROMPTS["en"]).replace("{exif}", exif).replace("{flags}", flags)
 
 
 def _jpeg_b64(img: Image.Image, side: int) -> tuple[str, str]:
@@ -797,12 +902,14 @@ def _jpeg_b64(img: Image.Image, side: int) -> tuple[str, str]:
 def _parse_json(text: str) -> dict:
     m = re.search(r"\{.*\}", text or "", re.S)
     if not m:
-        raise ValueError("模型未返回 JSON")
+        raise ValueError(t("cull.msg.ai_no_json"))
     d = json.loads(m.group(0))
     stars = int(d.get("stars", 0))
     if not 1 <= stars <= 5:
-        raise ValueError("stars 超出范围")
+        raise ValueError(t("cull.msg.ai_bad_stars"))
     d["stars"] = stars
+    g = str(d.get("genre", "")).strip()
+    d["genre"] = GENRE_LEGACY.get(g, g.lower() if g.lower() in GENRES else "other") if g else ""
     try:
         d["overall"] = int(round(float(d.get("overall", 0))))
     except (TypeError, ValueError):
@@ -811,16 +918,19 @@ def _parse_json(text: str) -> dict:
 
 
 def make_caller(provider: str, model: str):
-    """返回 call(b64_jpeg, prompt) -> 文本。三家统一接口。"""
+    """返回 call(b64_jpeg, prompt) -> 文本。各家统一接口。"""
     info = PROVIDERS[provider]
-    key = API_KEYS.get(provider) or os.environ.get(info["env"], "") or os.environ.get(info.get("alt_env", ""), "")
+    key = API_KEYS.get(provider) or env_key(provider)
+    if not key and provider == "custom":
+        key = "none"           # 本地服务（Ollama、LM Studio 等）通常不需要 Key
     if not key:
-        sys.exit(f"未设置 {info['env']}（{info['name']} 的 API Key）。见 README。")
-    if provider == "claude":
+        sys.exit(t("cull.msg.no_key", env=info["env"], name=info["name"]))
+    api = info["api"]
+    if api == "messages":
         try:
             import anthropic
         except ImportError:
-            sys.exit("使用 Claude 需要：pip install anthropic")
+            sys.exit(t("cull.msg.need_pkg", name=info["name"], pkg="anthropic"))
         client = anthropic.Anthropic(api_key=key, max_retries=4)
 
         def call(b64, prompt):
@@ -829,21 +939,73 @@ def make_caller(provider: str, model: str):
                 {"type": "text", "text": prompt}]}])
             return "".join(getattr(b, "text", "") for b in msg.content)
         return call
-    if provider == "gemini":
+    if api == "gemini":
         return _gemini_caller(key, model)
+    base = CUSTOM_BASE.get(provider) or info.get("base_url")
+    if api == "chat":
+        if not base:
+            sys.exit(t("cull.err.custom_incomplete"))
+        return _chat_caller(key, base, model, info["name"])
     try:
         from openai import OpenAI
     except ImportError:
-        sys.exit(f"使用 {info['name']} 需要：pip install openai")
-    client = OpenAI(api_key=key, base_url=info.get("base_url"), max_retries=4)
+        sys.exit(t("cull.msg.need_pkg", name=info["name"], pkg="openai"))
+    client = OpenAI(api_key=key, base_url=base, max_retries=4)
+    if api == "responses":
+        def call(b64, prompt):
+            # OpenAI 与 xAI 都支持 Responses API；推理模型的思考也计入输出上限，所以给足余量
+            r = client.responses.create(model=model, store=False, max_output_tokens=4000, input=[{
+                "role": "user", "content": [
+                    {"type": "input_image", "image_url": "data:image/jpeg;base64," + b64, "detail": "high"},
+                    {"type": "input_text", "text": prompt}]}])
+            return r.output_text
+        return call
+    raise ValueError(api)
+
+
+def _post_json(url: str, body: dict, headers: dict, label: str) -> dict:
+    """POST JSON，遇到限流／服务端错误时退避重试（最多 4 次）。只用标准库。"""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json", **headers})
+    delay = 2.0
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=180) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:300]
+            if e.code in (429, 500, 502, 503, 504) and attempt < 3:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise RuntimeError(f"{label} HTTP {e.code}: {detail}") from None
+        except urllib.error.URLError as e:
+            if attempt < 3:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise RuntimeError(f"{label}: {e.reason}") from None
+
+
+def _chat_caller(key: str, base: str, model: str, label: str):
+    """OpenAI 兼容的 Chat Completions（DeepSeek、通义千问、Kimi、豆包、OpenRouter、Ollama、LM Studio…）。
+    直接走 REST，不需要安装 openai 包。"""
+    url = base.rstrip("/") + "/chat/completions"
 
     def call(b64, prompt):
-        # OpenAI 与 xAI 都支持 Responses API；推理模型的思考也计入输出上限，所以给足余量
-        r = client.responses.create(model=model, store=False, max_output_tokens=4000, input=[{
-            "role": "user", "content": [
-                {"type": "input_image", "image_url": "data:image/jpeg;base64," + b64, "detail": "high"},
-                {"type": "input_text", "text": prompt}]}])
-        return r.output_text
+        body = {"model": model, "max_tokens": 4000, "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}},
+            {"type": "text", "text": prompt}]}]}
+        res = _post_json(url, body, {"Authorization": "Bearer " + key}, label)
+        choices = res.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"{label}: {str(res)[:200]}")
+        content = (choices[0].get("message") or {}).get("content") or ""
+        if isinstance(content, list):          # 少数服务返回分段内容
+            content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
+        return content
     return call
 
 
@@ -886,8 +1048,8 @@ def _gemini_caller(key: str, model: str):
         res = post(f"{GEMINI_BASE}/models/{model}:generateContent", body)
         cands = res.get("candidates") or []
         if not cands:
-            reason = (res.get("promptFeedback") or {}).get("blockReason", "无候选结果")
-            raise RuntimeError(f"Gemini 未返回结果：{reason}")
+            reason = (res.get("promptFeedback") or {}).get("blockReason", "no candidates")
+            raise RuntimeError(t("cull.msg.gemini_empty", reason=reason))
         return "".join(texts(cands[0].get("content", {})))
     return call
 
@@ -896,38 +1058,43 @@ def ai_review(items: list[tuple[Photo, Image.Image]], args, cache: dict, cache_p
     provider = args.provider
     info = PROVIDERS[provider]
     model = args.model or info["default"]
-    label = f"{info['name']}（{model}）"
+    if not model:
+        sys.exit(t("cull.err.custom_incomplete"))
+    lang = i18n.current()
+    label = f"{info['name']} ({model})"
     jobs = []
     for p, img in items:
         b64, digest = _jpeg_b64(img, AI_SIDE)
-        key = f"{provider}:{model}:{digest}"
-        hit = cache.get(key) or (cache.get(f"{model}:{digest}") if provider == "claude" else None)
+        key = f"{provider}:{model}:{lang}:{digest}"     # 评语跟语言走：换语言会重新细评
+        hit = cache.get(key) or (lang == "zh-CN" and (cache.get(f"{provider}:{model}:{digest}")
+                                 or (cache.get(f"{model}:{digest}") if provider == "claude" else None))) or None   # 1.5 及以前的中文缓存
         if hit:
             p.ai = hit
         else:
             jobs.append((p, b64, key))
     if not jobs:
-        print(f"AI 细评：{len(items)} 张全部命中缓存，不产生费用。")
+        print(t("cull.msg.ai_all_cached", n=len(items)))
         return
     call = make_caller(provider, model)
     est_in = len(jobs) * 1500
-    est_out = len(jobs) * (250 if provider in ("claude", "gemini") else 800)
-    print(f"AI 细评：{len(jobs)} 张需要调用 {label}（另有 {len(items)-len(jobs)} 张命中缓存）。")
+    est_out = len(jobs) * (250 if info["api"] in ("messages", "gemini") else 800)
+    print(t("cull.msg.ai_jobs", n=len(jobs), label=label, cached=len(items) - len(jobs)))
     fm = lambda n: f"{n/1e6:.2f}M" if n >= 1e6 else f"{n/1e3:.0f}K"
-    print(f"  预计约 {fm(est_in)} 输入 token ＋ {fm(est_out)} 输出 token（粗估）。")
+    print("  " + t("cull.confirm.tokens", inp=fm(est_in), out=fm(est_out)))
     if not args.yes:
         confirm = getattr(args, "confirm", None)
         ok = confirm(len(jobs), est_in, est_out, label) if confirm else \
-            input("  继续调用 API？输入 y 确认：").strip().lower() == "y"
+            input("  " + t("cull.msg.ai_ask")).strip().lower() == "y"
         if not ok:
-            print("  已跳过细评。")
+            print("  " + t("cull.msg.ai_skipped"))
             return
 
     def run(job):
         p, b64, key = job
-        exif = f"{p.camera} {p.lens} {p.exposure}".strip() or "未知"
-        flags = "、".join(p.flags) or "无明显问题"
-        d = _parse_json(call(b64, AI_PROMPT.format(exif=exif, flags=flags)))
+        exif = f"{p.camera} {p.lens} {p.exposure}".strip() or t("cull.msg.unknown", lang)
+        flags = t("cull.msg.list_sep", lang).join(flag_text(f, lang) for f in p.flags) or t("cull.msg.no_issues", lang)
+        d = _parse_json(call(b64, ai_prompt(exif, flags, lang)))
+        d["lang"] = lang
         d["provider"], d["model"] = info["name"], model
         return p, key, d
 
@@ -951,12 +1118,12 @@ def ai_review(items: list[tuple[Photo, Image.Image]], args, cache: dict, cache_p
                 cache[key] = d
                 ok_count += 1
             except Exception as e:  # 单张失败不影响整体
-                print(f"  细评失败：{type(e).__name__}: {e}")
+                print("  " + t("cull.msg.ai_failed", err=f"{type(e).__name__}: {e}"))
                 if ok_count == 0 and done >= 3:   # 开头连续失败：多半是 Key、模型名或余额问题，及时止损
                     for f in futs:
                         f.cancel()
                     save()
-                    print(f"  连续 {done} 张调用失败，已停止细评。请检查 {info['env']}、模型名称和账户余额。")
+                    print("  " + t("cull.msg.ai_stop", n=done, env=info["env"]))
                     return
             _report("ai", done, len(jobs))
             if done % 10 == 0 or done == len(jobs):
@@ -1024,7 +1191,7 @@ def merge_xmp(text: str, rating: int, label: str) -> str:
         text = re.sub(rf"\s*<xmp:{tag}\s*/>", "", text)
     m = re.search(r"<rdf:Description\b[^>]*?/?>", text, re.S)
     if not m:
-        raise ValueError("无法识别的 XMP 结构")
+        raise ValueError(t("cull.parse.xmp_struct"))
     tag = m.group(0)
     new = re.sub(r'\s+xmp:(Rating|Label)\s*=\s*"[^"]*"', "", tag)
     if 'xmlns:xmp="' not in text:
@@ -1065,11 +1232,11 @@ XMP_PAD = 2048   # 新写入的 XMP 预留空白，以后改星级可原地覆�
 def jpeg_segments(data: bytes):
     """解析 JPEG 头部各段，返回 ([(段起点, 内容起点, 段终点, 标记)], 图像数据 SOS 起点)。"""
     if data[:2] != b"\xff\xd8":
-        raise ValueError("不是 JPEG 文件")
+        raise ValueError(t("cull.parse.not_jpeg"))
     segs, i, n = [], 2, len(data)
     while i < n:
         if data[i] != 0xFF:
-            raise ValueError("JPEG 结构异常")
+            raise ValueError(t("cull.parse.jpeg_struct"))
         j = i + 1
         while j < n and data[j] == 0xFF:
             j += 1
@@ -1088,10 +1255,10 @@ def jpeg_segments(data: bytes):
             break
         length = int.from_bytes(data[j + 1:j + 3], "big")
         if length < 2 or j + 1 + length > n:
-            raise ValueError("JPEG 段长度异常")
+            raise ValueError(t("cull.parse.jpeg_seg"))
         segs.append((i, j + 3, j + 1 + length, m))
         i = j + 1 + length
-    raise ValueError("JPEG 中找不到图像数据")
+    raise ValueError(t("cull.parse.jpeg_no_scan"))
 
 
 def _packet(core: str, total: int | None) -> bytes | None:
@@ -1129,7 +1296,7 @@ def jpeg_set_rating(path: Path, rating: int, label: str, dry: bool) -> str:
         else:
             # 需要变长：只有当 XMP 段位于 MPF（多图索引）之前才安全，否则会打乱机内大预览的偏移
             if mpf_at is not None and mpf_at < a:
-                raise ValueError("JPEG 的 XMP 空间不足且位于 MPF 之后，为保护文件未写入")
+                raise ValueError(t("cull.parse.jpeg_mpf"))
             pkt = _packet(merged, None)
             out = data[:a] + _app1(pkt) + data[b:]
     else:
@@ -1146,12 +1313,12 @@ def jpeg_set_rating(path: Path, rating: int, label: str, dry: bool) -> str:
     # 校验：图像数据（SOS 之后的全部字节，含机内附带的预览图）必须逐字节不变
     segs2, sos2 = jpeg_segments(out)
     if out[sos2:] != data[sos:]:
-        raise ValueError("校验失败：图像数据发生变化，已放弃写入")
+        raise ValueError(t("cull.parse.verify_changed"))
     try:
         with Image.open(io.BytesIO(out)) as im:
             im.verify()
     except Exception as e:
-        raise ValueError(f"校验失败：写入后无法解码（{e}），已放弃写入")
+        raise ValueError(t("cull.parse.verify_decode", err=e))
     if not dry:
         tmp = path.with_name(path.name + ".cull-tmp")
         tmp.write_bytes(out)
@@ -1166,7 +1333,7 @@ def jpeg_set_rating(path: Path, rating: int, label: str, dry: bool) -> str:
 def _app1(packet: bytes) -> bytes:
     payload = XMP_APP1_ID + packet
     if len(payload) + 2 > 0xFFFF:
-        raise ValueError("XMP 过大，无法写入单个 JPEG 段")
+        raise ValueError(t("cull.parse.xmp_too_big"))
     return b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
 
 
@@ -1218,7 +1385,15 @@ def trash_photo(p: Photo, root: Path) -> list[str]:
 # ───────────────────────── 整理输出（分文件夹＋重命名） ─────────────────────────
 
 ORG_MANIFEST = ".photo-cull-organize.json"     # 记录上次整理到哪里，重新整理时原地挪动而不是再复制一份
-KEEP_DIR, REJECT_DIR, RAW_DIR, JPEG_DIR = "保留", "淘汰", "RAW", "JPEG"
+RAW_DIR, JPEG_DIR = "RAW", "JPEG"
+
+
+def result_dirs(meta_or_stats: dict | None = None) -> tuple[str, str]:
+    """保留／淘汰 两个文件夹的名字：沿用上次整理记录里的；没有记录时按当前语言（中文为「保留」「淘汰」）。"""
+    d = meta_or_stats or {}
+    if d.get("out") and not d.get("keep_dir"):          # 1.5 及以前的整理记录：当时用的是中文名
+        return "保留", "淘汰"
+    return d.get("keep_dir") or t("cull.org.kept"), d.get("reject_dir") or t("cull.org.rejected")
 
 
 def _safe(text: str) -> str:
@@ -1237,10 +1412,12 @@ def org_name(p: Photo, f: Path, rename: bool) -> str:
     return f"{star}_{model}_{name}" if model else f"{star}_{name}"
 
 
-def org_dest(p: Photo, f: Path, out_root: Path, by_result: bool, by_format: bool, rename: bool) -> Path:
+def org_dest(p: Photo, f: Path, out_root: Path, by_result: bool, by_format: bool, rename: bool,
+             dirs: tuple[str, str] | None = None) -> Path:
     d = out_root
     if by_result:
-        d = d / (REJECT_DIR if p.stars < 0 else KEEP_DIR)
+        keep, reject = dirs or result_dirs()
+        d = d / (reject if p.stars < 0 else keep)
     if by_format:
         d = d / (RAW_DIR if f.suffix.lower() in RAW_EXT else JPEG_DIR)
     return d / org_name(p, f, rename)
@@ -1255,7 +1432,7 @@ def _same_file(a: Path, b: Path) -> bool:
 
 
 def organize(photos: list[Photo], out_root, by_result=True, by_format=True, rename=True, move=False,
-             dry=False) -> dict:
+             dry=False, dirs: tuple[str, str] | None = None) -> dict:
     """把评分后的照片整理到输出文件夹。
     复制：原文件不动；再次整理时，上一次的副本按新星级换位置／换名字，不会多出一份。
     移动：原文件夹里就没有了，结果里的路径同步更新，之后在报告里改星级、删除仍然有效。
@@ -1269,6 +1446,8 @@ def organize(photos: list[Photo], out_root, by_result=True, by_format=True, rena
     stats = {"out": str(out_root), "photos": 0, "files": 0, "kept": 0, "rejected": 0, "skipped": 0,
              "mode": "move" if move else "copy", "dry_run": dry, "plan": [], "errors": [],
              "by_result": bool(by_result), "by_format": bool(by_format), "rename": bool(rename)}
+    dirs = dirs or result_dirs()
+    stats["keep_dir"], stats["reject_dir"] = dirs
     taken: set = set()
     for p in photos:
         if p.trashed or p.tier == "error":
@@ -1277,7 +1456,7 @@ def organize(photos: list[Photo], out_root, by_result=True, by_format=True, rena
         files = [Path(m).resolve() for m in (p.members or [p.path])]
         side_owner = next((f for f in files if f.suffix.lower() in RAW_EXT), files[0])
         mine = {str(f): Path(manifest[str(f)]) for f in files if not move and str(f) in manifest}
-        base = {f: org_dest(p, f, out_root, by_result, by_format, rename) for f in files}
+        base = {f: org_dest(p, f, out_root, by_result, by_format, rename, dirs) for f in files}
 
         def free(d: Path, f: Path) -> bool:
             if str(d) in taken:
@@ -1309,7 +1488,7 @@ def organize(photos: list[Photo], out_root, by_result=True, by_format=True, rena
             try:
                 _org_file(f, dest, side, dside, prev, move, out_root)
             except Exception as e:      # 单个文件出错（被占用、磁盘满等）不影响其余照片
-                stats["errors"].append(f"{f.name}：{e}")
+                stats["errors"].append(f"{f.name}: {e}")
                 continue
             stats["files"] += 1
             if move:
@@ -1339,7 +1518,8 @@ def org_resync(p: Photo, photos: list[Photo], meta: dict) -> dict | None:
     if not org or org.get("dry_run") or p.trashed:
         return None
     st = organize([p], org["out"], org.get("by_result", True), org.get("by_format", True),
-                  org.get("rename", True), org.get("mode") == "move")
+                  org.get("rename", True), org.get("mode") == "move",
+                  dirs=result_dirs(org))
     org_count(photos, org)
     return st
 
@@ -1368,7 +1548,7 @@ def org_trash_copies(p: Photo, meta: dict) -> list[str]:
 
 def _org_file(f: Path, dest: Path, side, dside: Path, prev, move: bool, out_root: Path):
     if not f.exists():
-        raise RuntimeError("找不到文件")
+        raise RuntimeError(t("server.file_missing"))
     dest.parent.mkdir(parents=True, exist_ok=True)
     if move:
         shutil.move(str(f), str(dest))
@@ -1389,13 +1569,21 @@ def _org_file(f: Path, dest: Path, side, dside: Path, prev, move: bool, out_root
 
 # ───────────────────────── 报告与结果文件 ─────────────────────────
 
-TIER_TEXT = {"candidate": "入围", "alt": "连拍备选", "reject": "淘汰", "error": "读取失败"}
+REPORT_PREFIXES = ("common", "report", "flag", "genre", "tier")
+
+
+def tier_text(tier: str, lang: str | None = None) -> str:
+    return t("tier." + tier, lang) if tier in ("candidate", "alt", "reject", "error") else tier
 PHOTO_FIELDS = set(Photo.__dataclass_fields__)
 
 
 def load_results(out: Path) -> tuple[list[Photo], dict]:
     rows = json.loads((out / "results.json").read_text(encoding="utf-8"))
     photos = [Photo(**{k: v for k, v in r.items() if k in PHOTO_FIELDS}) for r in rows]
+    for p in photos:                       # 旧版本保存的中文问题标记／题材 → 代码
+        p.flags = [flag_code(f) for f in p.flags]
+        if p.ai and p.ai.get("genre") in GENRE_LEGACY:
+            p.ai["genre"] = GENRE_LEGACY[p.ai["genre"]]
     meta_path = out / "meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     return photos, meta
@@ -1415,119 +1603,40 @@ def summarize(photos: list[Photo], out: Path, meta: dict) -> dict:
             "organized": {k: v for k, v in (meta.get("organized") or {}).items() if k != "plan"} or None}
 
 
-def write_report(photos: list[Photo], out: Path, meta: dict):
-    rows = []
-    for p in photos:
-        d = asdict(p)
-        d["tier_text"] = TIER_TEXT.get(p.tier, p.tier)
-        rows.append(d)
+def write_report(photos: list[Photo], out: Path, meta: dict, lang: str | None = None):
+    """results.json／meta.json／results.csv，以及独立的 report.html。
+    报告页由 web/report/ 的模板生成：样式、脚本和当前语言的语言包都内联进去，
+    所以 report.html 单独拷走（或直接双击打开）也能看。"""
+    lang = lang or i18n.current()
+    rows = [asdict(p) for p in photos]
     tmp = out / "results.json.tmp"
     tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(out / "results.json")
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    sep = t("cull.msg.list_sep", lang)
     with open(out / "results.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["文件", "配对文件", "结果", "星级", "色标", "本地分", "AI", "AI总分", "模糊度", "人脸", "连拍组",
-                    "问题", "AI评语", "已删除"])
+        w.writerow([t("report.csv." + k, lang) for k in ("file", "pair", "result", "stars", "label", "local", "ai",
+                                                       "ai_score", "blur", "faces", "burst", "issues", "comment", "deleted")])
         for p in photos:
             a = p.ai or {}
-            w.writerow([p.name, " + ".join(Path(m).name for m in p.members), TIER_TEXT.get(p.tier, p.tier),
+            w.writerow([p.name, " + ".join(Path(m).name for m in p.members), tier_text(p.tier, lang),
                         p.stars, p.label, p.local_score, a.get("provider", ""), a.get("overall", ""), p.blur,
-                        p.faces, f"{p.group}/{p.group_size}", "；".join(p.flags), a.get("comment", ""),
-                        "是" if p.trashed else ""])
-    data = json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")
-    page = REPORT_HTML.replace("__DATA__", data).replace("__SRC__", html.escape(meta.get("src", ""))) \
-        .replace("__WHEN__", datetime.now().strftime("%Y-%m-%d %H:%M")).replace("__VER__", VERSION)
+                        p.faces, f"{p.group}/{p.group_size}", sep.join(flag_text(x, lang) for x in p.flags),
+                        a.get("comment", ""), t("report.csv.yes", lang) if p.trashed else ""])
+    web = Path(__file__).resolve().parent / "web"
+    page = (web / "report" / "report.html").read_text(encoding="utf-8")
+    css = (web / "common" / "tokens.css").read_text(encoding="utf-8") + "\n" + (web / "report" / "report.css").read_text(encoding="utf-8")
+    js = (web / "common" / "i18n.js").read_text(encoding="utf-8") + "\n" + (web / "report" / "report.js").read_text(encoding="utf-8")
+    b = i18n.bundle(None, lang)
+    d = {k: v for k, v in b["dict"].items() if k.split(".", 1)[0] in REPORT_PREFIXES}
+    d["common.trash"] = d.get("common.trash_win" if os.name == "nt" else "common.trash_mac", "")
+    safe = lambda obj: json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
+    info = {"src": meta.get("src", ""), "when": datetime.now().strftime("%Y-%m-%d %H:%M"), "ver": VERSION}
+    for k, v in {"__LANG__": i18n.html_lang(lang), "__CSS__": css, "__I18N__": safe({"lang": lang, "langs": b["langs"], "dict": d}),
+                 "__DATA__": safe(rows), "__INFO__": safe(info), "__JS__": js.replace("</script", "<\\/script")}.items():
+        page = page.replace(k, v)
     (out / "report.html").write_text(page, encoding="utf-8")
-
-
-REPORT_HTML = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>照片筛选报告</title>
-<style>
-:root{--bg:#f6f5f2;--fg:#1d1d1b;--mut:#6b6a66;--card:#fff;--line:#e3e1dc;--g:#2f8a4c;--y:#b8860b;--r:#c0392b;--acc:#1d1d1b;--sel:#3b6fd8}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ecebe7;--mut:#9a9893;--card:#21211f;--line:#34332f;--acc:#ecebe7}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"PingFang SC","Helvetica Neue","Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif}
-header{padding:20px 16px 8px;max-width:1500px;margin:auto}h1{font-size:20px;margin:0 0 4px}.mut{color:var(--mut);font-size:12px}
-.bar{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px}
-.bar .in{max-width:1500px;margin:auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-button,select{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:4px 12px;cursor:pointer}
-button.on{background:var(--acc);color:var(--bg);border-color:var(--acc)}button:disabled{opacity:.4;cursor:default}
-button.danger{color:var(--r);border-color:var(--r)}.sp{flex:1}
-.stats{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}.stats b{font-size:18px;display:block}
-main{max-width:1500px;margin:auto;padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
-.c{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;position:relative}
-.c.sel{outline:3px solid var(--sel);outline-offset:-1px}
-.c img{width:100%;aspect-ratio:3/2;object-fit:contain;background:#0001;cursor:zoom-in;display:block}
-.pick{position:absolute;top:8px;left:8px;width:22px;height:22px;accent-color:var(--sel);cursor:pointer}
-.ed{position:absolute;top:6px;right:6px;font-size:12px;padding:2px 10px;background:#000a;color:#fff;border-color:#fff6}
-.b{padding:8px 10px;display:flex;flex-direction:column;gap:3px}.row{display:flex;justify-content:space-between;gap:6px;align-items:center}
-.n{font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.st{letter-spacing:1px;white-space:nowrap}
-.tag{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
-.pair{font-size:10px;padding:0 5px;border-radius:4px;background:var(--line);color:var(--mut);margin-left:4px;font-weight:600}
-.t-candidate{color:var(--g);border-color:var(--g)}.t-alt{color:var(--y);border-color:var(--y)}.t-reject,.t-error{color:var(--r);border-color:var(--r)}
-.fl{font-size:11px;color:var(--r)}.cm{font-size:12px}.lb{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px}
-.rate{display:flex;gap:2px}.rate button{border:0;background:none;padding:0 2px;font-size:16px;line-height:1;border-radius:4px;color:var(--mut)}
-.rate button.on{color:var(--y);background:none}.rate button.x.on{color:var(--r)}.rate button:hover{background:var(--line)}
-#zoom{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:9;padding:16px}#zoom img{max-width:100%;max-height:100%}
-.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;z-index:10;padding:16px}
-.modal.show{display:flex}.dlg{background:var(--card);border-radius:14px;padding:20px;max-width:440px;width:100%}
-.dlg h3{margin:0 0 8px}.dlg p{margin:6px 0;color:var(--mut)}.dlg .row{justify-content:flex-end;margin-top:16px}
-.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--acc);color:var(--bg);padding:8px 14px;border-radius:999px;font-size:13px;display:none;z-index:11}
-</style></head><body>
-<header><h1>照片筛选报告</h1><div class="mut">来源：__SRC__ · 生成：__WHEN__ · photo-cull __VER__ · <span id="modeNote"></span></div>
-<div class="stats" id="stats"></div></header>
-<div class="bar"><div class="in" id="filters"></div></div>
-<main id="grid"></main><div id="zoom" onclick="this.style.display='none'"><img></div>
-<div class="modal" id="modal"><div class="dlg"><h3 id="mT"></h3><div id="mB"></div>
-<div class="row"><button onclick="closeM()">取消</button><button class="danger" id="mGo">移到废纸篓</button></div></div></div>
-<div class="toast" id="toast"></div>
-<script>
-let D=__DATA__;const T={candidate:"入围",alt:"连拍备选",reject:"淘汰",error:"读取失败"};
-const LC={Green:"var(--g)",Yellow:"var(--y)",Red:"var(--r)"};let f="all",sort="score";const SEL=new Set();
-const m=location.pathname.match(/^\/out\/([^/]+)\//);const TOKEN=m?m[1]:null;const EDIT=!!TOKEN;
-const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const ext=p=>p.split(".").pop().toUpperCase();
-function api(path,body){return fetch(path,{method:"POST",headers:{"X-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify(body)}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j})}
-function toast(t){const e=document.getElementById("toast");e.textContent=t;e.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display="none",2600)}
-function stars(n){return n<0?"✕ 拒绝":n?"★".repeat(n)+"☆".repeat(5-n):"—"}
-function score(p){return p.ai?p.ai.overall*10:p.local_score}
-const live=()=>D.filter(p=>!p.trashed);
-function stats(){const L=live(),c={};L.forEach(p=>c[p.tier]=(c[p.tier]||0)+1);const tr=D.length-L.length;
-document.getElementById("stats").innerHTML=[["总数",L.length],["RAW+JPEG 配对",L.filter(p=>p.members.length>1).length],["4★以上",L.filter(p=>p.stars>=4).length],["入围",c.candidate||0],["连拍备选",c.alt||0],["淘汰",c.reject||0]].concat(tr?[["已删除",tr]]:[])
-.map(([k,v])=>`<div><b>${v}</b><span class="mut">${k}</span></div>`).join("");
-document.getElementById("modeNote").textContent=EDIT?"可直接改星级、勾选删除；改动会同步写入配对的 RAW 和 JPEG":"星级／色标已写入 XMP，可在 Lightroom／Capture One 中复核"}
-function filters(){const opts=[["all","全部"],["g4","4★以上"],["candidate","入围"],["alt","连拍备选"],["reject","淘汰"],["pair","配对"],["face","有人脸"]];
-let h=opts.map(([k,v])=>`<button class="${f==k?"on":""}" onclick="f='${k}';render()">${v}</button>`).join("")+
-`<select onchange="sort=this.value;render()"><option value="score"${sort=="score"?" selected":""}>按评分</option><option value="time"${sort=="time"?" selected":""}>按时间</option><option value="group"${sort=="group"?" selected":""}>按连拍组</option></select>`;
-if(EDIT){const rj=live().filter(p=>p.tier=="reject"||p.stars<0).length;h+=`<span class="sp"></span><button onclick="SEL.clear();render()" ${SEL.size?"":"disabled"}>清除选择</button><button class="danger" onclick="askTrash([...SEL])" ${SEL.size?"":"disabled"}>删除所选（${SEL.size}）</button><button class="danger" onclick="askTrash(live().filter(p=>p.tier=='reject'||p.stars<0).map(p=>p.path))" ${rj?"":"disabled"}>删除全部淘汰（${rj}）</button>`}
-document.getElementById("filters").innerHTML=h}
-let CUR=[];
-function rateUI(p,i){if(!EDIT)return `<span class="st">${stars(p.stars)}</span>`;
-return `<span class="rate">${[1,2,3,4,5].map(n=>`<button class="${p.stars>=n?"on":""}" title="${n} 星" onclick="mark(CUR[${i}].path,${n})">★</button>`).join("")}<button class="x ${p.stars<0?"on":""}" title="拒绝" onclick="mark(CUR[${i}].path,-1)">✕</button></span>`}
-function openEdit(path){window.open(`/open/edit?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(path)}`,"_blank","noopener")}
-function render(){filters();let L=live().filter(p=>f=="all"||(f=="g4"?p.stars>=4:f=="face"?p.faces>0:f=="pair"?p.members.length>1:p.tier==f));
-L.sort(sort=="time"?(a,b)=>a.time-b.time:sort=="group"?(a,b)=>a.group-b.group||score(b)-score(a):(a,b)=>score(b)-score(a));CUR=L;
-document.getElementById("grid").innerHTML=L.map((p,i)=>{const a=p.ai||{};const exts=p.members.length>1?p.members.map(ext).join("+"):"";
-return `<div class="c${SEL.has(p.path)?" sel":""}">${EDIT?`<input type="checkbox" class="pick" ${SEL.has(p.path)?"checked":""} onchange="pick(CUR[${i}].path,this.checked)" title="选择以删除"><button class="ed" onclick="openEdit(CUR[${i}].path)" title="在照片编辑程序中打开（新标签页）">编辑</button>`:""}<img loading="lazy" src="${esc(p.thumb)}" alt="${esc(p.name)}" onclick="z(this.src)">
-<div class="b"><div class="row"><span class="n" title="${esc(p.members.join("\n")||p.path)}">${p.label?`<span class="lb" style="background:${LC[p.label]}"></span>`:""}${esc(p.name.replace(/\.[^.]+$/,""))}${exts?`<span class="pair">${exts}</span>`:`<span class="pair">${ext(p.name)}</span>`}</span><span class="tag t-${p.tier}">${T[p.tier]||p.tier}</span></div>
-<div class="row">${rateUI(p,i)}<span class="mut">${a.overall?esc(a.provider||"AI")+" "+a.overall+"/10 · ":""}本地 ${p.local_score}${p.manual?" · 已手动调整":""}</span></div>
-<div class="mut">${esc(p.exposure)}${p.group_size>1?` · 连拍组 ${p.group}（${p.group_size} 张${p.group_best?"，组内最佳":""}）`:""}</div>
-${p.flags.length?`<div class="fl">${p.flags.map(esc).join("、")}</div>`:""}
-${a.comment?`<div class="cm">${esc(a.genre?"["+a.genre+"] ":"")}${esc(a.comment)}</div>`:""}
-${a.issues&&a.issues.length?`<div class="mut">改进：${a.issues.map(esc).join("；")}</div>`:""}${p.error?`<div class="fl">${esc(p.error)}</div>`:""}</div></div>`}).join("");stats()}
-function z(s){const e=document.getElementById("zoom");e.querySelector("img").src=s;e.style.display="flex"}
-function pick(path,on){on?SEL.add(path):SEL.delete(path);render()}
-async function mark(path,n){const p=D.find(x=>x.path==path);const v=(p.stars==n&&n>0)?n-1:n;
-try{const r=await api("/api/mark",{path,stars:v});Object.assign(p,r.photo);render();up(r.summary);toast(`已同步写入：${r.written.join("、")||"无变化"}`+(r.organized?"；输出文件夹已同步":""))}catch(e){toast("写入失败："+e.message)}}
-function up(s){if(window.parent!==window)window.parent.postMessage({pc:"summary",s},location.origin)}
-function closeM(){document.getElementById("modal").classList.remove("show")}
-function askTrash(paths){if(!paths.length)return;const ps=D.filter(p=>paths.includes(p.path));const files=ps.reduce((n,p)=>n+Math.max(1,p.members.length),0);
-document.getElementById("mT").textContent=`删除 ${ps.length} 张照片？`;
-document.getElementById("mB").innerHTML=`<p>共 ${files} 个文件（含配对的 RAW／JPEG）及对应 XMP，会移到<b>废纸篓</b>，可在废纸篓里恢复。</p><p>如果这些照片已导入 Lightroom／Capture One，目录里会显示为“找不到文件”，请在软件里一并移除。</p>`;
-document.getElementById("mGo").onclick=async()=>{closeM();try{const r=await api("/api/trash",{paths});r.trashed.forEach(x=>{const p=D.find(y=>y.path==x);if(p)p.trashed=true;SEL.delete(x)});render();up(r.summary);toast(`已移到${r.where}：${r.files} 个文件`)}catch(e){toast("删除失败："+e.message)}};
-document.getElementById("modal").classList.add("show")}
-render();
-</script></body></html>"""
 
 
 # ───────────────────────── 主流程 ─────────────────────────
@@ -1564,7 +1673,7 @@ def process_one(members: list[Path], thumbs: Path, keep_preview: bool):
             errors.append(f"{src.name}: {type(ex).__name__}: {ex}")
     try:
         if img is None:
-            raise RuntimeError("；".join(errors) or "无法读取")
+            raise RuntimeError("; ".join(errors) or t("cull.msg.unreadable"))
         if not e.get("dt") and p.kind == "raw":
             e = {**read_exif(primary), **{k: v for k, v in e.items() if v}}
         p.time = capture_time(e, primary)
@@ -1581,13 +1690,25 @@ def process_one(members: list[Path], thumbs: Path, keep_preview: bool):
 
 
 def main(argv=None, confirm=None):
+    """命令行入口（图形界面也在自己的进程里调用它）。--lang 只在这一次运行里生效。"""
+    saved = i18n._override
+    try:
+        return _main(argv, confirm)
+    finally:
+        i18n.set_override(saved)
+
+
+def _main(argv=None, confirm=None):
     ap = argparse.ArgumentParser(prog="cull.py", description="照片筛选：本地技术评分＋可选 AI 细评，RAW＋JPEG 同步标记，输出 XMP 和网页报告。")
     ap.add_argument("folder", type=Path, help="照片文件夹")
     ap.add_argument("-r", "--recursive", action="store_true", help="包含子文件夹")
     ap.add_argument("-o", "--out", type=Path, help="报告输出目录（默认：照片文件夹/photo-cull-report）")
     ap.add_argument("--ai", action="store_true", help="对入围照片调用 AI 细评")
-    ap.add_argument("--provider", choices=list(PROVIDERS), default="claude", help="细评用哪家：claude／openai（ChatGPT）／grok／gemini")
-    ap.add_argument("--model", help="细评模型（默认：claude-sonnet-5-5／gpt-5.5／grok-4.7／gemini-3.8-flash）")
+    ap.add_argument("--provider", choices=list(PROVIDERS), default="claude",
+                    help="细评用哪家：claude／openai（ChatGPT）／grok／gemini／deepseek／custom（OpenAI 兼容接口，配合 --base-url）")
+    ap.add_argument("--model", help="细评模型（默认：" + "／".join(v["default"] for v in PROVIDERS.values() if v["default"]) + "）")
+    ap.add_argument("--base-url", help="--provider custom 时的接口地址，例如 https://dashscope.aliyuncs.com/compatible-mode/v1")
+    ap.add_argument("--lang", choices=list(i18n.LANGS), help="输出语言（报告、日志、AI 评语）：zh-CN／en／ja，默认跟随界面设置或系统语言")
     ap.add_argument("--ai-alts", action="store_true", help="连拍备选也送去细评（更贵）")
     ap.add_argument("--yes", action="store_true", help="不再询问，直接调用 API／执行删除")
     ap.add_argument("--no-xmp", action="store_true", help="只出报告，不写任何星级")
@@ -1612,19 +1733,23 @@ def main(argv=None, confirm=None):
     args = ap.parse_args(argv)
     args.confirm = confirm
     jpeg_embed = not args.no_jpeg_embed
+    if args.lang:
+        i18n.set_override(args.lang)
+    if args.base_url:
+        CUSTOM_BASE["custom"] = args.base_url.strip()
 
     src = args.folder.expanduser().resolve()
     if not src.is_dir():
-        sys.exit(f"找不到文件夹：{src}")
+        sys.exit(t("cull.msg.no_folder", path=src))
     out = (args.out.expanduser().resolve() if args.out else src / "photo-cull-report")
     thumbs = out / "thumbs"
     thumbs.mkdir(parents=True, exist_ok=True)
 
     groups = collect(src, args.recursive)
     if not groups:
-        sys.exit("文件夹里没有支持的照片。")
+        sys.exit(t("cull.msg.no_photos"))
     npairs = sum(1 for g in groups if len(g) > 1)
-    print(f"共 {len(groups)} 张照片（{sum(len(g) for g in groups)} 个文件，其中 {npairs} 组 RAW＋JPEG 配对），开始本地分析…")
+    print(t("cull.msg.start", n=len(groups), files=sum(len(g) for g in groups), pairs=npairs))
     t0 = time.time()
     photos, previews = [], {}
     _report("analyze", 0, len(groups))
@@ -1644,7 +1769,7 @@ def main(argv=None, confirm=None):
                 print(f"  {i}/{len(groups)}")
     group_bursts([p for p in photos if not p.error], args.burst_gap, args.scene_gap, args.similarity)
     score_local(photos, args)
-    print(f"本地分析完成，用时 {time.time()-t0:.0f} 秒。")
+    print(t("cull.msg.analyzed", s=f"{time.time()-t0:.0f}"))
 
     if args.ai:
         tiers = {"candidate", "alt"} if args.ai_alts else {"candidate"}
@@ -1668,7 +1793,7 @@ def main(argv=None, confirm=None):
                 if q:
                     p.stars, p.label, p.manual = q.stars, q.label, True
             if manual:
-                print(f"保留了上次手动调整的 {sum(1 for p in photos if p.manual)} 张照片的星级。")
+                print(t("cull.msg.kept_manual", n=sum(1 for p in photos if p.manual)))
         except Exception:
             pass
     assign_ratings(photos)
@@ -1684,12 +1809,12 @@ def main(argv=None, confirm=None):
                 if apply_marks(p, args.dry_run, jpeg_embed, args.xmp_all):
                     written += 1
             except Exception as ex:
-                p.flags.append(f"星级未写入：{ex}")
+                p.flags.append(f"xmp_fail:{ex}")
 
     trashed_files = 0
     if args.trash_rejects and not args.dry_run:
         rejects = [p for p in photos if p.tier == "reject"]
-        if rejects and (args.yes or input(f"将把 {len(rejects)} 张淘汰照片（含配对文件）移到废纸篓，输入 y 确认：").strip().lower() == "y"):
+        if rejects and (args.yes or input(t("cull.msg.trash_ask", n=len(rejects))).strip().lower() == "y"):
             for p in rejects:
                 trashed_files += len(trash_photo(p, src))
 
@@ -1697,19 +1822,21 @@ def main(argv=None, confirm=None):
     if args.organize is None and prev_org and not prev_org.get("dry_run") and Path(prev_org.get("out", "")).is_dir():
         # 这次没勾整理：沿用上次的整理记录，之后在报告里改星级、删除仍会同步到输出文件夹
         organized = {k: v for k, v in prev_org.items() if k != "plan"}
-        print(f"输出文件夹 {organized['out']} 保持上次整理时的状态；需要按新星级重新整理时，勾选「整理输出」或在报告页点「按当前星级整理」。")
+        print(t("cull.msg.org_kept_state", out=organized["out"]))
     if args.organize is not None:
-        target = Path(args.organize).expanduser() if args.organize else src / "整理输出"
+        target = Path(args.organize).expanduser() if args.organize else src / t("cull.org.default_dir")
         if not target.is_absolute():
             target = src / target
-        organized = organize(photos, target, args.by_result, args.by_format, args.rename, args.move, args.dry_run)
-        verb = "移动" if args.move else "复制"
+        dirs = result_dirs(prev_org) if prev_org and Path(prev_org.get("out", "")) == target.resolve() else None
+        organized = organize(photos, target, args.by_result, args.by_format, args.rename, args.move, args.dry_run, dirs)
+        verb = t("cull.org.verb_move" if args.move else "cull.org.verb_copy")
         if args.dry_run:
-            print(f"演练模式：本应把 {organized['photos']} 张照片（{len(organized['plan'])} 个文件）{verb}到 {target}，实际未执行。")
+            print(t("cull.msg.org_dry", n=organized["photos"], files=len(organized["plan"]), verb=verb, out=target))
         else:
-            print(f"已{verb} {organized['photos']} 张照片（{organized['files']} 个文件）到 {target}：保留 {organized['kept']}，淘汰 {organized['rejected']}。")
+            print(t("cull.msg.org_done", n=organized["photos"], files=organized["files"], verb=verb, out=target,
+                    kept=organized["kept"], rejected=organized["rejected"]))
         for e in organized["errors"][:10]:
-            print("  整理失败：" + e)
+            print("  " + t("cull.org.failed") + " " + e)
 
     meta = {"src": str(src), "version": VERSION, "dry_run": args.dry_run, "no_xmp": args.no_xmp,
             "jpeg_embed": jpeg_embed, "xmp_all": args.xmp_all, "xmp": 0 if (args.no_xmp or args.dry_run) else written,
@@ -1717,16 +1844,16 @@ def main(argv=None, confirm=None):
     write_report(photos, out, meta)
     res = summarize(photos, out, meta)
 
-    print("\n结果：入围 {candidate}，连拍备选 {alt}，淘汰 {reject}，读取失败 {error}；4★以上 {top} 张；RAW＋JPEG 配对 {pairs} 组。".format(**res))
+    print("\n" + t("cull.msg.result", **{k: res[k] for k in ("candidate", "alt", "reject", "error", "top", "pairs")}))
     if args.no_xmp:
-        print("未写星级（--no-xmp）。")
+        print(t("cull.msg.no_xmp"))
     elif args.dry_run:
-        print(f"演练模式：本应为 {written} 张照片写入星级，实际未写。")
+        print(t("cull.msg.dry_xmp", n=written))
     else:
-        print(f"已为 {written} 张照片同步写入星级（RAW→XMP 边车{'，JPEG→内嵌 XMP' if jpeg_embed else ''}）。")
+        print(t("cull.msg.xmp_done_embed" if jpeg_embed else "cull.msg.xmp_done", n=written))
     if trashed_files:
-        print(f"已把 {trashed_files} 个文件移到废纸篓。")
-    print(f"报告：{out / 'report.html'}")
+        print(t("cull.msg.trashed", n=trashed_files))
+    print(t("cull.msg.report", path=out / "report.html"))
     _report("done", 1, 1)
     return res
 

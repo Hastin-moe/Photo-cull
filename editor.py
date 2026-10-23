@@ -26,6 +26,8 @@ import numpy as np
 from PIL import Image, ImageOps
 
 import cull
+import i18n
+from i18n import t
 
 try:
     import cv2
@@ -54,7 +56,7 @@ BUILTIN = "builtin:"
 # 用户自己添加的 LUT：放在设置文件夹里，升级／重装工具不会丢，也不会混进项目源码
 USER_LUT_DIR = Path.home() / ".photo-cull" / "luts"
 USER = "user:"
-USER_GROUP = "我的 LUT"
+USER_GROUP = "我的 LUT"          # 分组的内部名字；界面显示用 group_label（随语言变化）
 USER_LUT_MAX = 64 * 1024 * 1024        # 单个 .cube 最大 64 MB（65³ 的 LUT 约 9 MB）
 _BUILTIN_INDEX: dict = {}
 
@@ -142,7 +144,7 @@ def normalize_params(p: dict | None) -> dict:
     out["mono"] = bool(p.get("mono", False))
     vg = p.get("vignette")
     if isinstance(vg, dict) and vg.get("lens") in LENSES:     # 1.3.1 的数字暗角不再沿用
-        out["vignette"] = {"lens": vg["lens"], "level": vg.get("level") if vg.get("level") in VIG_LEVELS else "mid"}
+        out["vignette"] = {"lens": vg["lens"], "level": vg.get("level") if vg.get("level") in VIG_LEVEL_IDS else "mid"}
     curve = p.get("curve") or {}
     for ch in ("rgb", "r", "g", "b"):
         pts = curve.get(ch)
@@ -302,7 +304,7 @@ def _dlog(x):
 
 
 LOG_SPACES = {
-    "srgb": {"name": "sRGB（索尼 ST／徕卡 STD）"},
+    "srgb": {"name": "sRGB"},          # 显示名见语言包 edit.space.srgb
     "slog3": {"name": "Sony S-Log3／S-Gamut3.Cine", "gamut": "sgamut3cine", "f": _slog3},
     "vlog": {"name": "Panasonic V-Log／V-Gamut", "gamut": "vgamut", "f": _vlog},
     "flog2": {"name": "Fujifilm F-Log2／F-Gamut", "gamut": "rec2020", "f": _flog2},
@@ -320,14 +322,14 @@ OTHER_LOG = [r"s-?log2", r"s-?log(?!\d)", r"l-?log", r"n-?log", r"logc", r"log3g
 
 def active_spaces() -> dict:
     """界面里可选的 LUT 输入空间。"""
-    return {k: v["name"] for k, v in LOG_SPACES.items() if ENABLE_LOG or k == "srgb"}
+    return {k: (t("edit.space.srgb") if k == "srgb" else v["name"]) for k, v in LOG_SPACES.items() if ENABLE_LOG or k == "srgb"}
 
 
 def guess_space(path: str) -> tuple[str, str]:
     """根据文件名／所在文件夹猜 LUT 的输入空间。返回 (space, 提示)。"""
     sp, warn = _guess_space(path)
     if not ENABLE_LOG and sp != "srgb":
-        return "srgb", "这是相机 Log 素材用的 LUT，Log 转换暂未启用；按 sRGB 套用颜色会不对"
+        return "srgb", t("edit.warn.log_disabled")
     return sp, warn
 
 
@@ -336,18 +338,18 @@ def _guess_space(path: str) -> tuple[str, str]:
     name = Path(path).name.lower().replace("_", "-")
     fv = "fvpro" in s.replace(" ", "")
     if fv and re.search(r"/print/", s):
-        return "srgb", "这是胶片印片 LUT，要接在负片 LUT 之后使用；单独套在照片上颜色会不对"
+        return "srgb", t("edit.warn.print_lut")
     sp = next((spc for pat, spc in SUPPORTED_LOG if re.search(pat, name)), None)
     if sp is None:   # 文件名没写，再看所在文件夹（例如 “某相机Log版/SLog3/xxx.cube”）
         parent = str(Path(s).parent)
         if not any(re.search(pat, name) for pat in OTHER_LOG):
             sp = next((spc for pat, spc in SUPPORTED_LOG if re.search(pat, parent)), None)
             if sp is None and any(re.search(pat, parent) for pat in OTHER_LOG):
-                return "srgb", "这是其他相机 Log 素材用的 LUT，编辑器暂不支持这种 Log；套在照片上颜色会不对"
+                return "srgb", t("edit.warn.other_log")
     if sp is None and any(re.search(pat, name) for pat in OTHER_LOG):
-        return "srgb", "这是其他相机 Log 素材用的 LUT，编辑器暂不支持这种 Log；套在照片上颜色会不对"
+        return "srgb", t("edit.warn.other_log")
     if sp and fv and re.search(r"/negative/", s):
-        return sp, "这是胶片负片 LUT，输出的是负片底片效果，要再接印片 LUT 才是正常画面"
+        return sp, t("edit.warn.negative_lut")
     return sp or "srgb", ""
 
 
@@ -432,11 +434,11 @@ def load_cube(path: str) -> dict:
             elif k == "LUT_3D_SIZE":
                 size3 = int(parts[1])
                 if not 2 <= size3 <= 129:
-                    raise ValueError(f"LUT_3D_SIZE {size3} 不合理（应为 2–129）")
+                    raise ValueError(t("edit.err.lut_size3", n=size3))
             elif k == "LUT_1D_SIZE":
                 size1 = int(parts[1])
                 if not 2 <= size1 <= 65536:
-                    raise ValueError(f"LUT_1D_SIZE {size1} 不合理（应为 2–65536）")
+                    raise ValueError(t("edit.err.lut_size1", n=size1))
             elif k == "DOMAIN_MIN":
                 dmin = np.array([float(v) for v in parts[1:4]], np.float32)
             elif k == "DOMAIN_MAX":
@@ -445,16 +447,16 @@ def load_cube(path: str) -> dict:
     if size3:
         need = size3 ** 3 * 3
         if data.size < need:
-            raise ValueError("cube 数据不完整")
+            raise ValueError(t("edit.err.cube_incomplete"))
         table = data[:need].reshape(size3, size3, size3, 3).transpose(2, 1, 0, 3).copy()   # 文件里 R 变化最快
         kind = "3d"
     elif size1:
         if data.size < size1 * 3:
-            raise ValueError("cube 数据不完整")
+            raise ValueError(t("edit.err.cube_incomplete"))
         table = data[:size1 * 3].reshape(size1, 3)
         kind = "1d"
     else:
-        raise ValueError("不是有效的 .cube 文件（缺少 LUT_3D_SIZE／LUT_1D_SIZE）")
+        raise ValueError(t("edit.err.cube_invalid"))
     space, warn = guess_space(str(p))
     res = {"kind": kind, "table": table, "size": size3 or size1, "title": title or p.stem,
            "dmin": dmin, "dmax": dmax, "space": space, "warning": warn}
@@ -629,13 +631,13 @@ SLIDER_MAP = {"Exposure2012": "exposure", "Contrast2012": "contrast", "Highlight
               "Shadows2012": "shadows", "Whites2012": "whites", "Blacks2012": "blacks", "Clarity2012": "clarity",
               "Vibrance": "vibrance", "Saturation": "saturation", "IncrementalTemperature": "temp",
               "IncrementalTint": "tint"}
-UNSUPPORTED_NAMES = {
-    "Texture": "纹理", "Dehaze": "去朦胧", "Sharpness": "锐化", "LuminanceSmoothing": "降噪", "ColorNoiseReduction": "颜色降噪",
-    "GrainAmount": "颗粒", "PostCropVignetteAmount": "暗角", "Temperature": "绝对色温", "Tint": "绝对色调",
-    "ParametricShadows": "参数曲线", "ParametricDarks": "参数曲线", "ParametricLights": "参数曲线",
-    "ParametricHighlights": "参数曲线", "SplitToningShadowSaturation": "分离色调", "SplitToningHighlightSaturation": "分离色调",
-    "ColorGradeMidtoneSat": "颜色分级", "ColorGradeShadowSat": "颜色分级", "ColorGradeHighlightSat": "颜色分级",
-    "ColorGradeGlobalSat": "颜色分级", "LensProfileEnable": "镜头校正", "PerspectiveVertical": "透视校正",
+UNSUPPORTED_NAMES = {      # Lightroom 参数 → 不支持的功能代码（显示名见语言包 edit.unsup.*）
+    "Texture": "texture", "Dehaze": "dehaze", "Sharpness": "sharpen", "LuminanceSmoothing": "nr", "ColorNoiseReduction": "color_nr",
+    "GrainAmount": "grain", "PostCropVignetteAmount": "vignette", "Temperature": "abs_temp", "Tint": "abs_tint",
+    "ParametricShadows": "parametric", "ParametricDarks": "parametric", "ParametricLights": "parametric",
+    "ParametricHighlights": "parametric", "SplitToningShadowSaturation": "split_toning", "SplitToningHighlightSaturation": "split_toning",
+    "ColorGradeMidtoneSat": "color_grading", "ColorGradeShadowSat": "color_grading", "ColorGradeHighlightSat": "color_grading",
+    "ColorGradeGlobalSat": "color_grading", "LensProfileEnable": "lens_corr", "PerspectiveVertical": "perspective",
 }
 HSL_PREFIX = ("HueAdjustment", "SaturationAdjustment", "LuminanceAdjustment")
 _PRESET_CACHE: dict = {}
@@ -717,15 +719,15 @@ def read_preset(path: str) -> dict:
     for k, v in attrs.items():
         label = UNSUPPORTED_NAMES.get(k)
         if label is None and k.startswith(HSL_PREFIX):
-            label = "HSL 颜色调整"
+            label = "hsl"
         if label and v not in ("0", "+0", "0.0", "", "False", "false"):
             if k in ("Temperature", "Tint") and attrs.get("WhiteBalance") in (None, "As Shot"):
                 continue
             unsup.add(label)
     if "<crs:CorrectionMasks>" in text_main or "<crs:MaskGroupBasedCorrections>" in text_main:
-        unsup.add("局部调整／蒙版")
+        unsup.add("masks")
     if "HDREditMode" in attrs and attrs["HDREditMode"] == "1":
-        unsup.add("HDR 编辑")
+        unsup.add("hdr")
     res["unsupported"] = sorted(unsup)
     res["tables"] = _tables(text_main, attrs)
     if look_block:
@@ -805,9 +807,9 @@ def describe_style(path: str, root: str | None = None) -> dict:
     if p.suffix.lower() == ".cube":
         c = load_cube(str(p))
         return {"kind": "lut", "name": c["title"] or p.stem, "path": style_ref(str(p)), "size": c["size"], "lut_kind": c["kind"],
-                "space": c["space"], "warning": c["warning"]}
+                "space": c["space"], "warning": guess_space(str(p))[1]}      # 提示文字按当前语言重新生成（load_cube 有缓存）
     if p.suffix.lower() != ".xmp":
-        raise ValueError("只支持 .cube 和 .xmp")
+        raise ValueError(t("edit.err.style_type"))
     pr = read_preset(path)
     out = {"kind": "look" if pr["type"] == "Look" else "preset", "name": pr["name"], "path": str(p),
            "set": pr["set"] if pr["type"] != "Look" else {}, "curves": pr["curves"] if pr["type"] != "Look" else {},
@@ -829,11 +831,20 @@ def describe_style(path: str, root: str | None = None) -> dict:
                 except Exception:
                     pass
             else:
-                out["warning"] = f"预设引用的外观「{pr['look_ref'].get('name')}」没找到（需要和预设放在同一套文件夹里）"
+                out["warning"] = t("edit.warn.look_missing", name=pr["look_ref"].get("name") or "")
     out["for_raw"], out["for_jpeg"] = target.get("for_raw", True), target.get("for_jpeg", True)
     if pr["profile"] and pr["profile"] not in ("Adobe Standard", "Adobe Color", ""):
-        out["unsupported"] = sorted(set(out["unsupported"]) | {f"相机配置文件 {pr['profile']}"})
+        out["unsupported"] = sorted(set(out["unsupported"]) | {"profile:" + pr["profile"]})
+    out["unsupported"] = [unsup_text(u) for u in out["unsupported"]]
     return out
+
+
+def unsup_text(code: str) -> str:
+    if code.startswith("profile:"):
+        return t("edit.unsup.profile", name=code[8:])
+    key = "edit.unsup." + code
+    text = t(key)
+    return code if text == key else text
 
 
 def look_layers(path: str) -> dict:
@@ -953,9 +964,9 @@ def decode(path: str, half: bool = True, as_float: bool = True) -> tuple[np.ndar
             info["base_ev"] = round(_baseline_exposure(p) + 0.7, 3)
             return lin, info
         except ImportError:
-            info["warning"] = "没有安装 rawpy，正在用 RAW 内嵌的预览图编辑（8 位，宽容度有限）。请运行 启动.command 自动安装。"
+            info["warning"] = t("edit.warn.no_rawpy")
         except Exception as e:
-            info["warning"] = f"RAW 解码失败（{type(e).__name__}: {e}），正在用内嵌预览图编辑，宽容度有限。"
+            info["warning"] = t("edit.warn.raw_failed", err=f"{type(e).__name__}: {e}")
         img = cull.load_preview(p, PREVIEW_SIDE if half else None)
         info["mode"] = "preview"
     else:
@@ -988,12 +999,12 @@ class Context:
             try:
                 self.look = look_layers(P["look"]["path"])
             except Exception as e:
-                self.notes.append(f"外观读取失败：{e}")
+                self.notes.append(t("edit.warn.look_read", err=e))
         if P.get("lut"):
             try:
                 self.lut = load_cube(P["lut"]["path"])
             except Exception as e:
-                self.notes.append(f"LUT 读取失败：{e}")
+                self.notes.append(t("edit.warn.lut_read", err=e))
 
 
 def wb_gains(P: dict) -> np.ndarray:
@@ -1015,29 +1026,29 @@ def base_tone(x: np.ndarray) -> np.ndarray:
     return over
 
 
-# 经典徕卡 M 镜头的暗角模拟（未经机身镜头校正的光学原貌）。
+# 经典徕卡 M 镜头的暗角模拟（未经机身镜头校正的光学原貌）。镜头的显示名在语言包 edit.lens.<型号>。
 # 徕卡数据表只以曲线图给出相对照度，没有公开数值，这里按各镜头的设计特点做近似：
 #  · ev：四角比中心暗多少档；弱／中／强 分别对应 约 f/5.6、约 f/2.8、光圈全开 时的暗角
 #  · p ：衰减曲线的形状（亮度损失 ∝ 距中心距离^p）；数值越小，暗角从越靠近中心的地方开始（大光圈、广角更明显）
 LENSES = {
-    "11874": {"name": "徕卡 11874 · Summilux-M 35mm f/1.4 ASPH.（1994 版，非 FLE）",
-              "stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/1.4"},
+    "11874": {"stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/1.4"},
               "ev": {"weak": 0.6, "mid": 1.2, "strong": 2.2}, "p": 1.8},
-    "11699": {"name": "徕卡 11699 · APO-Summicron-M 35mm f/2 ASPH.",
-              "stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/2"},
+    "11699": {"stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/2"},
               "ev": {"weak": 0.8, "mid": 1.3, "strong": 1.9}, "p": 2.0},
-    "11141": {"name": "徕卡 11141 · APO-Summicron-M 50mm f/2 ASPH.",
-              "stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/2"},
+    "11141": {"stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/2"},
               "ev": {"weak": 0.5, "mid": 0.9, "strong": 1.4}, "p": 2.4},
-    "11672": {"name": "徕卡 11672 · Summicron-M 28mm f/2 ASPH.（2016 第二代）",
-              "stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/2"},
+    "11672": {"stops": {"weak": "f/5.6", "mid": "f/2.8", "strong": "f/2"},
               "ev": {"weak": 1.0, "mid": 1.6, "strong": 2.3}, "p": 1.9},
 }
-VIG_LEVELS = {"weak": "弱", "mid": "中", "strong": "强"}
+VIG_LEVEL_IDS = ("weak", "mid", "strong")
+
+
+def vig_levels() -> dict:
+    return {k: t("edit.vig." + k) for k in VIG_LEVEL_IDS}
 
 
 def lens_list() -> list:
-    return [{"id": k, "name": v["name"], "stops": v["stops"], "ev": v["ev"]} for k, v in LENSES.items()]
+    return [{"id": k, "name": t("edit.lens." + k), "stops": v["stops"], "ev": v["ev"]} for k, v in LENSES.items()]
 
 
 def vignette_gain(h: int, w: int, ev: float, y_off: int = 0, full_hw=None, power: float = 2.3) -> np.ndarray:
@@ -1128,24 +1139,20 @@ def apply_clarity(D: np.ndarray, P: dict, full_shape=None) -> np.ndarray:
 #  · target：测光目标亮度（显示用线性值，18% 灰＝0.18）；comp：曝光补偿（档）
 #  · damping／max：偏离越大纠正得越少，保留原始氛围；提亮（up）和压暗（dn）分开设
 #  · clip_limit：允许的高光溢出比例；clip_back：为收高光最多往回收几档
-METER_STYLES = {
+METER_STYLES = {      # 各方案的显示名和说明在语言包 edit.meter.<id>.name／desc
     "global": {
-        "name": "全局评价", "desc": "整幅画面分区评价，目标 18% 灰；影调中性：黑位、白位适中，对比不加不减",
         "weight": "zones", "target": 0.18, "comp": 0.0,
         "damping_up": 0.8, "max_up": 2.5, "damping_dn": 0.9, "max_dn": 2.5, "clip_limit": 0.01, "clip_back": 1.5,
         "tone": {"black": 0.020, "white": 0.965, "base_c": 0, "spread": 0.52, "c": (-20, 25), "b": (-40, 40), "w": (-40, 40), "strength": 0.75}},
     "leica_cw": {
-        "name": "徕卡经典中央重点", "desc": "M 机身式中央重点测光，目标比 18% 灰低约 1/4 档；影调深沉：黑位压得深、对比偏强，暗景只补一部分",
         "weight": "center", "sigma": 0.5, "target": 0.15, "comp": 0.0,
         "damping_up": 0.6, "max_up": 1.6, "damping_dn": 0.85, "max_dn": 2.2, "clip_limit": 0.01, "clip_back": 1.5,
         "tone": {"black": 0.010, "white": 0.955, "base_c": 12, "spread": 0.55, "c": (0, 40), "b": (-55, 25), "w": (-40, 30), "strength": 0.85}},
     "leica_global": {
-        "name": "徕卡全局测光 +0.3EV", "desc": "徕卡多区（全局）测光，再加 +0.3 档补偿；影调同徕卡，但更通透",
         "weight": "zones", "target": 0.15, "comp": 0.3,
         "damping_up": 0.6, "max_up": 1.6, "damping_dn": 0.85, "max_dn": 2.2, "clip_limit": 0.01, "clip_back": 1.5,
         "tone": {"black": 0.012, "white": 0.96, "base_c": 8, "spread": 0.55, "c": (0, 35), "b": (-50, 25), "w": (-40, 35), "strength": 0.85}},
     "fuji_cw": {
-        "name": "富士中央重点", "desc": "中央区域比徕卡更宽，目标 18% 灰；影调柔和：黑位留一点、过渡平缓、中间调明亮，高光保护更严",
         "weight": "center", "sigma": 0.65, "target": 0.18, "comp": 0.0,
         "damping_up": 0.75, "max_up": 2.0, "damping_dn": 0.85, "max_dn": 2.2, "clip_limit": 0.005, "clip_back": 1.0,
         "tone": {"black": 0.022, "white": 0.97, "base_c": -5, "spread": 0.50, "c": (-20, 20), "b": (-35, 35), "w": (-35, 40), "strength": 0.75}},
@@ -1154,7 +1161,6 @@ METER_STYLES = {
 ENABLE_HDR = False
 HDR_STYLES = {
     "hdr": {
-        "name": "HDR 动态测光", "desc": "先按高光定曝光（几乎不溢出），再用「阴影」提亮暗部、「高光」压住亮部，适合大光比场景",
         "weight": "zones", "target": 0.16, "comp": 0.0,
         "damping_up": 0.7, "max_up": 2.0, "damping_dn": 0.9, "max_dn": 2.5, "clip_limit": 0.002, "clip_back": 3.0,
         "hdr": True},
@@ -1165,7 +1171,7 @@ DEFAULT_METER = "leica_cw"
 
 
 def meter_list() -> list:
-    return [{"id": k, "name": v["name"], "desc": v["desc"]} for k, v in METER_STYLES.items()]
+    return [{"id": k, "name": t(f"edit.meter.{k}.name"), "desc": t(f"edit.meter.{k}.desc")} for k in METER_STYLES]
 
 
 def _tone_eval(vals: np.ndarray, c: float, b: float, w: float) -> np.ndarray:
@@ -1287,13 +1293,13 @@ def auto_adjust(lin: np.ndarray, info: dict, P: dict, style: str = DEFAULT_METER
     protected = ev_hi < ev_d
     ev = max(min(ev_d, ev_hi), ev_d - st["clip_back"]) if protected else ev_d
     out = {"exposure": round(max(-5.0, min(5.0, ev)), 2)}
-    note = f"曝光 {out['exposure']:+.2f}" + ("（已收高光）" if protected else "")
+    note = t("edit.auto.exposure", v=f"{out['exposure']:+.2f}") + (t("edit.auto.protected") if protected else "")
     tone_stats = None
     if st.get("tone") and not st.get("hdr"):
         Yenc = srgb_encode(np.clip(srgb_decode(shot(out["exposure"])) @ REC709_Y, 0, 1))
         tone, tone_stats = auto_tone(Yenc, st["tone"])
         out.update(tone)
-        note += f" · 对比 {tone['contrast']:+d} · 黑色 {tone['blacks']:+d} · 白色 {tone['whites']:+d}"
+        note += " · " + t("edit.auto.tone", c=f"{tone['contrast']:+d}", b=f"{tone['blacks']:+d}", w=f"{tone['whites']:+d}")
 
     if st.get("hdr"):
         # 曝光已按高光定好；看暗部有多暗、整体光比多大，决定阴影提亮和高光压缩的力度
@@ -1308,10 +1314,11 @@ def auto_adjust(lin: np.ndarray, info: dict, P: dict, style: str = DEFAULT_METER
         if m2 > st["target"] * 1.3:
             out["exposure"] = round(max(-5.0, out["exposure"] - 0.5 * math.log2(m2 / (st["target"] * 1.3))), 2)
         out.update(extra)
-        note = f"曝光 {out['exposure']:+.2f} · 阴影 {shadows:+d} · 高光 {highlights:+d}（光比约 {dr:.1f} 档）"
+        note = t("edit.auto.hdr", v=f"{out['exposure']:+.2f}", s=f"{shadows:+d}", h=f"{highlights:+d}", dr=f"{dr:.1f}")
     if st["comp"]:
-        note += f" · 含补偿 {st['comp']:+.1f}"
-    return {"set": out, "style": st["name"], "style_id": style if style in METER_STYLES else DEFAULT_METER,
+        note += " · " + t("edit.auto.comp", v=f"{st['comp']:+.1f}")
+    sid = style if style in METER_STYLES or style in HDR_STYLES else DEFAULT_METER
+    return {"set": out, "style": t(f"edit.meter.{sid}.name"), "style_id": style if style in METER_STYLES else DEFAULT_METER,
             "note": note, "meter_ev": round(ev_meter, 2), "highlight_limited": bool(protected), "tone": tone_stats}
 
 
@@ -1381,7 +1388,7 @@ class Session:
     def open(self, path: str) -> dict:
         p = Path(path).expanduser()
         if not p.is_file() or p.suffix.lower() not in EDIT_EXT:
-            raise ValueError("不支持的文件")
+            raise ValueError(t("edit.err.unsupported_file"))
         t0 = time.time()
         lin, info = decode(str(p), half=True)
         base = as_planar(resize_lin(lin, PREVIEW_SIDE))
@@ -1425,7 +1432,7 @@ class Session:
                 return None, {}
             with self.lock:
                 if self.base is None:
-                    raise ValueError("还没有打开照片")
+                    raise ValueError(t("edit.err.no_photo"))
                 lin = self._pick(self._level(side), quality == "fast")
                 info = self.info
             t0 = time.time()
@@ -1446,8 +1453,8 @@ class Session:
 
     def start_export(self, path: str, P: dict, out_dir: str | None, fmt: str, quality: int, long_edge: int):
         if self.export.get("running"):
-            raise ValueError("已有导出在进行")
-        self.export = {"running": True, "msg": "准备…", "pct": 0.0, "file": None, "error": None, "name": Path(path).name}
+            raise ValueError(t("edit.err.export_busy"))
+        self.export = {"running": True, "msg": t("edit.export.preparing"), "pct": 0.0, "file": None, "error": None, "name": Path(path).name}
 
         def prog(msg, pct):
             self.export.update(msg=msg, pct=round(pct, 3))
@@ -1455,7 +1462,7 @@ class Session:
         def run():
             try:
                 f = export(path, P, out_dir, fmt, quality, long_edge, prog)
-                self.export.update(file=f, msg="完成", pct=1.0)
+                self.export.update(file=f, msg=t("edit.export.finished"), pct=1.0)
             except Exception as e:
                 self.export.update(error=f"{type(e).__name__}: {e}")
             finally:
@@ -1466,7 +1473,7 @@ class Session:
     def auto(self, P: dict, style: str = DEFAULT_METER) -> dict:
         with self.lock:
             if self.base is None:
-                raise ValueError("还没有打开照片")
+                raise ValueError(t("edit.err.no_photo"))
             base, info = self.base, self.info
         return auto_adjust(base, info, normalize_params(P), style)
 
@@ -1506,7 +1513,7 @@ def has_edit(photo: str) -> bool:
 def list_folder(folder: str) -> list[dict]:
     d = Path(folder).expanduser()
     if not d.is_dir():
-        raise ValueError("找不到这个文件夹")
+        raise ValueError(t("server.folder_not_found"))
     groups = cull.collect(d, False)
     items = []
     for g in groups:
@@ -1533,7 +1540,7 @@ def scan_library(root: str, limit: int = 8000) -> dict:
     builtin = root in ("builtin", "", "（内置）") or Path(root).expanduser().resolve() == LUT_DIR
     r = LUT_DIR if builtin else Path(root).expanduser()
     if not r.is_dir():
-        raise ValueError("找不到素材库文件夹")
+        raise ValueError(t("edit.err.lib_not_found"))
     scope = [] if builtin else [s for s in LIBRARY_SCOPE if (r / s).is_dir()]
     starts = [r / s for s in scope] if scope else [r]
     items = []
@@ -1548,6 +1555,8 @@ def scan_library(root: str, limit: int = 8000) -> dict:
             rel = full.relative_to(r)
             item = {"path": style_ref(str(full)) if builtin else str(full), "name": full.stem.replace(".cube", ""),
                     "group": rel.parent.as_posix(), "kind": "cube" if low.endswith(".cube") else "xmp"}
+            if builtin:
+                item["group_label"] = builtin_group_label(item["group"])
             if item["kind"] == "cube":
                 sp, warn = guess_space(str(full))
                 item["space"] = sp
@@ -1560,6 +1569,16 @@ def scan_library(root: str, limit: int = 8000) -> dict:
     return {"root": "builtin" if builtin else str(r), "items": items, "truncated": False, "scope": scope, "builtin": builtin}
 
 
+def builtin_group_label(folder: str) -> str:
+    """内置 LUT 的文件夹名 → 界面显示名（文件夹名本身不随语言变化，免得编辑记录里的引用失效）。"""
+    low = folder.lower()
+    if low.startswith("fujifilm"):
+        return t("edit.lib.group.fujifilm")
+    if low.startswith("leica"):
+        return t("edit.lib.group.leica")
+    return folder
+
+
 # ───── 用户添加的 LUT
 def user_lut_items() -> list:
     if not USER_LUT_DIR.is_dir():
@@ -1570,7 +1589,7 @@ def user_lut_items() -> list:
             continue
         sp, warn = guess_space(str(f))
         out.append({"path": style_ref(str(f)), "name": f.stem, "group": USER_GROUP, "kind": "cube",
-                    "space": sp, "warn": bool(warn), "user": True})
+                    "space": sp, "warn": bool(warn), "user": True, "group_label": t("edit.lib.group.user")})
     return out
 
 
@@ -1585,10 +1604,10 @@ def _safe_lut_name(name: str) -> str:
 def add_user_lut(name: str, text: str) -> dict:
     """检查一个 .cube 的内容，没问题就存进 USER_LUT_DIR。重名时加 (2)、(3)…，不覆盖已有文件。"""
     if not str(name).lower().endswith(".cube"):
-        raise ValueError("只支持 .cube 文件")
+        raise ValueError(t("edit.err.cube_only"))
     data = str(text).encode("utf-8")
     if len(data) > USER_LUT_MAX:
-        raise ValueError("文件太大（超过 64 MB）")
+        raise ValueError(t("edit.err.cube_too_big"))
     USER_LUT_DIR.mkdir(parents=True, exist_ok=True)
     stem = _safe_lut_name(name)
     tmp = USER_LUT_DIR / f".incoming-{os.getpid()}-{threading.get_ident()}.cube"
@@ -1610,10 +1629,10 @@ def add_user_lut(name: str, text: str) -> dict:
 def remove_user_lut(ref: str) -> str:
     """只能移除「我的 LUT」里的文件（内置和外部素材库的文件不动）。"""
     if not str(ref).startswith(USER):
-        raise ValueError("只能移除自己添加的 LUT")
+        raise ValueError(t("edit.err.remove_own"))
     p = (USER_LUT_DIR / ref[len(USER):]).resolve()
     if USER_LUT_DIR.resolve() not in p.parents or p.suffix.lower() != ".cube" or not p.is_file():
-        raise ValueError("找不到这个 LUT")
+        raise ValueError(t("edit.err.lut_not_found"))
     p.unlink()
     return p.stem
 
@@ -1698,7 +1717,7 @@ def export(path: str, P: dict, out_dir: str | None = None, fmt: str = "jpeg", qu
     src = Path(path)
     P = normalize_params(P)
     if progress:
-        progress("解码 RAW…", 0.05)
+        progress(t("edit.export.decoding"), 0.05)
     lin, info = decode(str(src), half=False, as_float=False)
     if long_edge and max(lin.shape[:2]) > long_edge:
         lin = resize_lin(lin, long_edge)
@@ -1715,7 +1734,7 @@ def export(path: str, P: dict, out_dir: str | None = None, fmt: str = "jpeg", qu
         piece = strip[y0 - a:y0 - a + (y1 - y0)]
         out[y0:y1] = (piece * (65535 if fmt == "tiff" else 255) + 0.5).astype(out.dtype)
         if progress:
-            progress(f"渲染 {k + 1}/{len(rows)}", 0.1 + 0.85 * (k + 1) / len(rows))
+            progress(t("edit.export.strip", k=k + 1, n=len(rows)), 0.1 + 0.85 * (k + 1) / len(rows))
     od = Path(out_dir).expanduser() if out_dir else src.parent / "photo-cull-export"
     od.mkdir(parents=True, exist_ok=True)
     ext = ".tif" if fmt == "tiff" else ".jpg"
@@ -1726,7 +1745,7 @@ def export(path: str, P: dict, out_dir: str | None = None, fmt: str = "jpeg", qu
         n += 1
     if fmt == "tiff":
         if cv2 is None or not cv2.imwrite(str(dest), out[..., ::-1]):
-            raise RuntimeError("16 位 TIFF 写入失败")
+            raise RuntimeError(t("edit.err.tiff_write"))
     else:
         img = Image.fromarray(out)
         kw = {"quality": int(quality), "subsampling": 0 if quality >= 90 else 2, "exif": _exif_for(src)}
@@ -1735,7 +1754,7 @@ def export(path: str, P: dict, out_dir: str | None = None, fmt: str = "jpeg", qu
             kw["icc_profile"] = icc
         img.save(dest, "JPEG", **kw)
     if progress:
-        progress("完成", 1.0)
+        progress(t("edit.export.finished"), 1.0)
     return str(dest)
 
 
