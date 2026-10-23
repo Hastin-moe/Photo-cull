@@ -1,0 +1,39 @@
+<!doctype html><html lang="__LANG__"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>photo-cull</title>
+<!-- 一体窗口：照片筛选、照片编辑各放一个 iframe，切换时只切换显示，两边的状态都保留。
+     两个界面通过 postMessage 通知这里：{pc:"switch", to}、{pc:"open-edit", path}、{pc:"edit-path", path}、{pc:"lang"}。
+     当前界面和编辑中的照片记在地址里（start、path），整页刷新后能回到原处。 -->
+<link rel="stylesheet" href="/static/common/tokens.css?v=__VER__">
+<style>
+html,body{margin:0;height:100%;background:var(--bg);overflow:hidden}
+iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:var(--bg)}
+iframe.on{display:block}
+</style>
+<script>window.I18N=__I18N__;</script>
+<script src="/static/common/i18n.js?v=__VER__"></script>
+</head><body>
+<iframe id="f-cull" data-src="__CULL_URL__" title="cull"></iframe>
+<iframe id="f-edit" data-src="__EDIT_URL__" title="edit"></iframe>
+<script>
+const FR={cull:document.getElementById("f-cull"),edit:document.getElementById("f-edit")};
+const ORIGIN={cull:new URL(FR.cull.dataset.src).origin,edit:new URL(FR.edit.dataset.src).origin};
+let cur=null;
+function show(app){if(!FR[app])return;cur=app;
+ Object.entries(FR).forEach(([k,f])=>{if(k==app&&!f.src)f.src=f.dataset.src;f.classList.toggle("on",k==app)});
+ document.title=T("common.app."+app)+" · "+T("common.app.suite");
+ try{FR[app].contentWindow.focus()}catch(e){}
+ setParam("start",app)}
+addEventListener("message",e=>{
+ const from=Object.keys(ORIGIN).find(k=>ORIGIN[k]===e.origin);if(!from)return;const d=e.data||{};
+ if(d.pc=="switch")show(d.to);
+ else if(d.pc=="open-edit"&&d.path){if(!FR.edit.src){const u=new URL(FR.edit.dataset.src);u.searchParams.set("path",d.path);FR.edit.dataset.src=u.href}
+  else FR.edit.contentWindow.postMessage({pc:"open",path:d.path},ORIGIN.edit);show("edit")}
+ else if(d.pc=="edit-path"&&from=="edit"){setParam("path",d.path||"")}
+ else if(d.pc=="lang")location.reload()});   // 整个窗口刷新：两个界面都换成新语言，并回到当前的界面和照片
+function setParam(k,v){try{const u=new URL(location.href);if(v)u.searchParams.set(k,v);else u.searchParams.delete(k);history.replaceState(null,"",u.href)}catch(e){}}
+addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&(e.key=="1"||e.key=="2")){e.preventDefault();show(e.key=="1"?"cull":"edit")}});
+show("__START__");
+// 另一个界面在后台预先加载，第一次切换也是瞬间
+setTimeout(()=>Object.values(FR).forEach(f=>{if(!f.src)f.src=f.dataset.src}),1200);
+</script>
+</body></html>

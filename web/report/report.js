@@ -29,7 +29,8 @@ function filters(){const opts=[["all",T("report.f.all")],["g4",T("report.f.g4")]
 let CUR=[];
 function rateUI(p,i){if(!EDIT)return `<span class="st">${stars(p.stars)}</span>`;
  return `<span class="rate">${[1,2,3,4,5].map(n=>`<button class="${p.stars>=n?"on":""}" title="${T("report.star_n",{n})}" onclick="mark(CUR[${i}].path,${n})">★</button>`).join("")}<button class="x ${p.stars<0?"on":""}" title="${T("report.reject")}" onclick="mark(CUR[${i}].path,-1)">✕</button></span>`}
-function openEdit(path){window.open(`/open/edit?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(path)}`,"_blank","noopener")}
+function openEdit(path){if(window.top!==window&&window.top!==window.parent){window.top.postMessage({pc:"open-edit",path},location.origin);return}   // 在一体窗口里：直接切到照片编辑
+ window.open(`/open/edit?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(path)}`,"_blank","noopener")}
 function render(){filters();let L=live().filter(p=>f=="all"||(f=="g4"?p.stars>=4:f=="face"?p.faces>0:f=="pair"?p.members.length>1:p.tier==f));
  L.sort(sort=="time"?(a,b)=>a.time-b.time:sort=="group"?(a,b)=>a.group-b.group||score(b)-score(a):(a,b)=>score(b)-score(a));CUR=L;
  const sep=T("report.list_sep");

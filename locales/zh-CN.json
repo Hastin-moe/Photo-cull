@@ -26,7 +26,8 @@
   },
   "app": {
    "cull": "照片筛选",
-   "edit": "照片编辑"
+   "edit": "照片编辑",
+   "suite": "照片工具"
   },
   "sep": "；"
  },
@@ -267,7 +268,9 @@
   "only_current_save": "只能保存当前打开的照片",
   "only_current_export": "只能导出当前打开的照片",
   "started": "{name} 已启动：",
-  "close_hint": "关闭这个终端窗口即可退出。"
+  "close_hint": "关闭这个终端窗口即可退出。",
+  "already_running": "照片工具已经在运行，打开现有窗口：",
+  "app_quit": "关闭窗口即可退出。"
  },
  "flag": {
   "blur": "失焦或模糊",

@@ -41,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit(t("cull.msg.need_opencv"))
 
-VERSION = "1.6-beta"
+VERSION = "1.7-beta"
 RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2", ".pef", ".3fr", ".iiq"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".heif", ".hif", ".webp"}
 JPEG_EXT = {".jpg", ".jpeg"}

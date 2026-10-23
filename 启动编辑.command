@@ -1,6 +1,6 @@
 #!/bin/bash
 # 双击启动「照片编辑」（macOS）。环境没准备好时会先自动安装（第一次需要联网）。
-# 照片筛选和照片编辑是两个独立程序，可以同时开着，各自关掉终端窗口即可退出。
+# 两个程序在同一个窗口里，右上角直接切换；已经开着时再双击只会打开现有窗口。关掉终端窗口即可退出。
 cd "$(dirname "$0")" || exit 1
 printf '\033]0;照片编辑\007'
 
@@ -18,4 +18,4 @@ if ! "$PY" tools/setup_env.py --quiet-if-ready; then
   exit 1
 fi
 
-exec .venv/bin/python gui.py --app edit
+exec .venv/bin/python gui.py --app all --start edit

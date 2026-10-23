@@ -4,7 +4,7 @@ const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-Token":TOKEN,"Conten
 const F=["folder","recursive","remember_key","ai_alts","xmp","jpeg_embed","xmp_all","dry_run","org","org_dir","org_result","org_format","org_rename","burst_gap","scene_gap","similarity","blur_warn","blur_reject","clip_high","clip_low","workers"];
 let S={ai:false,provider:"claude",models:{},keys:{},envKeys:{},P:{},order:[],baseUrl:"",orgMove:false},since=0,timer=null;
 const OTHER="__other__";
-applyI18n();langMenu($("lang"),v=>api("/api/lang",{lang:v}));
+applyI18n();langMenu($("lang"),v=>api("/api/lang",{lang:v}));if(window.shellNav)shellNav("cull");
 $("revealReport").textContent=T("cull.done.reveal_report",{fm:T("common.file_manager")});
 document.querySelectorAll(".xlink").forEach(a=>a.href=a.dataset.href+"?t="+encodeURIComponent(TOKEN));
 
@@ -89,7 +89,7 @@ $("xmp").onchange=syncXmp;$("run").onclick=run;$("loadPrev").onclick=loadPrev;$(
 $("pick").onclick=async()=>{$("pick").disabled=true;try{const r=await api("/api/choose",{start:$("folder").value});if(r.folder)$("folder").value=r.folder}catch(e){alert(e.message)}$("pick").disabled=false};
 $("mYes").onclick=()=>{api("/api/confirm",{yes:true});$("modal").classList.remove("show")};
 $("mNo").onclick=()=>{api("/api/confirm",{yes:false});$("modal").classList.remove("show")};
-$("openReport").onclick=()=>window.open(`/out/${TOKEN}/report.html`,"_blank");
+$("openReport").onclick=()=>window.SHELL?api("/api/open_report",{}).catch(e=>alert(e.message)):window.open(`/out/${TOKEN}/report.html`,"_blank");
 $("revealReport").onclick=()=>api("/api/reveal",{what:"report"});$("revealOrg").onclick=()=>api("/api/reveal",{what:"org"});
 ["org","org_result","org_format","org_rename"].forEach(k=>$(k).onchange=syncOrg);$("org_dir").oninput=syncOrg;
 $("orgMode").querySelectorAll("button").forEach(b=>b.onclick=()=>setOrgMove(b.dataset.m=="1"));
@@ -99,4 +99,9 @@ $("orgNow").onclick=async()=>{const o=orgOpts();
  $("orgNow").disabled=true;try{const r=await api("/api/organize",o);stats(r.summary);
   const g=r.organized;if(g&&g.errors&&g.errors.length){const l=$("log");l.textContent+=T("cull.org.failed")+"\n"+g.errors.join("\n")+"\n";$("logBox").open=true}}catch(e){alert(e.message)}$("orgNow").disabled=false};
 $("revealPhotos").onclick=()=>api("/api/reveal",{what:"photos"});
-api("/api/settings").then(fill).catch(()=>{document.body.innerHTML=`<p style='padding:40px'>${T("common.link_expired")}</p>`});
+/* 页面刷新（例如切换语言）后恢复：正在运行就接着显示进度，已有结果就直接显示结果 */
+async function restore(){try{const st=await api("/api/status?since=0");if(!st.running&&!st.result)return;
+ S.runAI=!!st.ai;showWork();
+ if(st.running){since=0;$("run").disabled=true;$("loadPrev").disabled=true;$("cancel").classList.remove("hidden");pill("cull.pill.running","run");timer=setInterval(poll,400)}
+ else{since=st.next;stageUI({stage:"done",done:1,total:1});stats(st.result);$("done").classList.remove("hidden");pill("cull.pill.done","ok")}}catch(e){}}
+api("/api/settings").then(s=>{fill(s);restore()}).catch(()=>{document.body.innerHTML=`<p style='padding:40px'>${T("common.link_expired")}</p>`});

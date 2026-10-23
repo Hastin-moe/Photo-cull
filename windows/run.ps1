@@ -18,5 +18,5 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 $VPy = Join-Path $Root ".venv-win\Scripts\python.exe"
-& $VPy (Join-Path $Root "gui.py") --app $App
+& $VPy (Join-Path $Root "gui.py") --app all --start $App
 if ($LASTEXITCODE -ne 0) { Read-Host "程序异常退出，按回车键关闭" | Out-Null; exit $LASTEXITCODE }

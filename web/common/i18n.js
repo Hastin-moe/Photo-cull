@@ -13,7 +13,7 @@
   /* 语言下拉框：选中后保存到服务端（两个程序共用），再刷新页面 */
   function langMenu(sel,save){if(!sel)return;
     sel.innerHTML=Object.entries(I.langs).map(([k,v])=>`<option value="${k}"${k==I.lang?" selected":""}>${v}</option>`).join("");
-    sel.onchange=async()=>{try{await save(sel.value);location.reload()}catch(e){alert(e.message)}}}
+    sel.onchange=async()=>{try{await save(sel.value);if(window.SHELL)window.shellPost({pc:"lang"});else location.reload()}catch(e){alert(e.message)}}}
   /* 数字、日期按当前语言格式化 */
   const num=(n,o)=>Number(n).toLocaleString(I.lang,o);
   window.T=T;window.applyI18n=applyI18n;window.langMenu=langMenu;window.fmtNum=num;window.LANG=I.lang;

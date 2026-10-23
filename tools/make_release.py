@@ -9,12 +9,13 @@ sys.path.insert(0, str(ROOT))
 import cull  # noqa: E402
 
 VER = cull.VERSION
-COMMON = ["cull.py", "gui.py", "editor.py", "i18n.py", "requirements.txt", "README.md", "README.en.md", "README.ja.md",
+COMMON = ["cull.py", "gui.py", "editor.py", "i18n.py", "desktop.py", "requirements.txt", "README.md", "README.en.md", "README.ja.md",
           "LICENSE", "luts/说明.txt", "tools/setup_env.py"]
 TREES = ["web", "locales"]          # 整个文件夹打包：界面（HTML／CSS／JS）和语言包
 PLATFORM = {
     "Windows": ["安装环境.bat", "启动筛选.bat", "启动编辑.bat", "windows/run.ps1", "windows/setup.ps1"],
-    "macOS": ["安装环境.command", "启动筛选.command", "启动编辑.command"],
+    "macOS": ["安装环境.command", "启动筛选.command", "启动编辑.command", "打包Mac应用.command",
+              "tools/build_mac_app.py", "packaging/photo-cull.spec", "packaging/icon.icns"],
 }
 
 QUICK = {
@@ -44,8 +45,10 @@ QUICK = {
 2. 需要先装好 Python 3.9 以上：https://www.python.org/downloads/
 3. 右键点「安装环境.command」→「打开」→ 再点「打开」（macOS 对网上下载的脚本会先拦一下），
    它会联网安装依赖（约 1–3 分钟；连不上 PyPI 时自动用清华镜像），最后列出检查结果。
-4. 「启动筛选.command」「启动编辑.command」第一次也要右键 →「打开」，以后直接双击。两个可以同时开。
-5. 关闭终端窗口即可退出对应的程序。
+4. 「启动筛选.command」「启动编辑.command」第一次也要右键 →「打开」，以后直接双击。
+   照片筛选和照片编辑在同一个窗口里，右上角直接切换（⌘1／⌘2）。关闭终端窗口即可退出。
+5. 想要一个不需要终端的 Mac 应用：双击「打包Mac应用.command」（第一次约 3–8 分钟），
+   生成 dist/mac/照片工具.app，拖到「应用程序」即可。
 
 界面语言：简体中文／English／日本語，在程序右上角切换（Language switch at the top right）。
 内置 39 个 LUT（Fujifilm GFX 胶片模拟 20 个、Leica Look 19 个，工作空间均为 sRGB），在照片编辑的「风格（LUT）」里直接用。

@@ -111,6 +111,7 @@ class Job:
         self.lines = []
         self.stage, self.done, self.total = "idle", 0, 0
         self.result, self.error = None, None
+        self.ai = False
         self.pending = None
         self.answer = None
         self.answered = threading.Event()
@@ -123,7 +124,7 @@ class Job:
         with self.lock:
             return {"running": self.running, "stage": self.stage, "done": self.done, "total": self.total,
                     "lines": self.lines[since:], "next": len(self.lines), "result": self.result,
-                    "error": self.error, "pending": self.pending}
+                    "error": self.error, "pending": self.pending, "ai": self.ai}
 
     # 回调
     def progress(self, stage, done, total):
@@ -144,12 +145,15 @@ class Job:
 
 JOB = Job()
 
-# ───────────────────────── 两个独立程序 ─────────────────────────
-# 筛选、编辑各自用一个启动文件开成独立进程（gui.py --app cull／--app edit），互不阻塞。
-# 启动时把自己的端口和令牌登记到 ~/.photo-cull/apps/<app>.json（仅本人可读），
-# 这样从报告点「编辑」时能直接跳到正在运行的编辑程序；没在运行就提示去启动。
-APP = "cull"
+# ───────────────────────── 两个程序怎么跑 ─────────────────────────
+# 一体模式（默认，gui.py --app all，启动文件和 Mac 应用都用它）：同一个进程里起两个本地服务，
+#   筛选、编辑各占一个端口；/shell 页面把两个界面放在同一个窗口里，顶部直接切换，状态都保留。
+# 单独模式（gui.py --app cull／--app edit）：一个进程只跑一个程序。需要另一个时自动在后台把它启动起来。
+# 每个服务把端口和令牌登记到 ~/.photo-cull/apps/<app>.json（仅本人可读），供另一个进程找到它。
+APP = "cull"                 # 单独模式下本进程的程序；一体模式下每个服务各自的程序见 server.app
 APP_NAMES = ("cull", "edit")
+LOCAL: dict = {}             # 本进程里正在跑的服务：app → {"port", "token"}
+FROZEN = bool(getattr(sys, "frozen", False))      # 打包成 Mac 应用（PyInstaller）后运行
 _EXT = ".bat" if os.name == "nt" else ".command"
 LAUNCHERS = {"cull": "启动筛选" + _EXT, "edit": "启动编辑" + _EXT}      # 启动文件名本身不随语言变化
 _PLAT = "win" if os.name == "nt" else "mac" if sys.platform == "darwin" else "other"
@@ -185,8 +189,10 @@ def _registry(app: str) -> Path:
     return CONFIG_DIR / "apps" / f"{app}.json"
 
 
-def register(port: int):
-    f = _registry(APP)
+def register(port: int, app: str | None = None):
+    app = app or APP
+    LOCAL[app] = {"port": port, "token": TOKEN, "pid": os.getpid()}
+    f = _registry(app)
     f.parent.mkdir(parents=True, exist_ok=True)
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps({"port": port, "token": TOKEN, "pid": os.getpid()}), encoding="utf-8")
@@ -203,7 +209,9 @@ def register(port: int):
 
 
 def peer(app: str) -> dict | None:
-    """另一个程序是否在运行：读登记文件，再向它的 /ping 确认（防止端口已被别的程序占用）。"""
+    """另一个程序是否在运行：本进程里有就直接用；否则读登记文件，再向它的 /ping 确认（防止端口已被别的程序占用）。"""
+    if app in LOCAL:
+        return LOCAL[app]
     try:
         d = json.loads(_registry(app).read_text(encoding="utf-8"))
         import urllib.request
@@ -212,6 +220,28 @@ def peer(app: str) -> dict | None:
                 return d
     except Exception:
         pass
+    return None
+
+
+def start_peer(app: str, wait: float = 20.0) -> dict | None:
+    """单独模式下需要另一个程序时，在后台把它启动起来（不再要求用户先去双击启动文件）。"""
+    if FROZEN or os.environ.get("PHOTO_CULL_NO_AUTOSTART"):
+        return None
+    env = dict(os.environ, PHOTO_CULL_NO_BROWSER="1")
+    env.pop("PHOTO_CULL_PORT", None)
+    try:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--app", app], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                         start_new_session=True, cwd=str(Path(__file__).resolve().parent))
+    except OSError:
+        return None
+    import time
+    end = time.time() + wait
+    while time.time() < end:
+        d = peer(app)
+        if d:
+            return d
+        time.sleep(0.25)
     return None
 
 
@@ -255,6 +285,7 @@ def build_argv(o: dict) -> list[str]:
 def run_job(options: dict):
     JOB.reset()
     JOB.running = True
+    JOB.ai = bool(options.get("ai"))
     cull.CANCEL.clear()
     cull.PROGRESS = JOB.progress
     prov = options.get("provider", "claude")
@@ -398,6 +429,10 @@ def reveal(path: str):
 class Handler(BaseHTTPRequestHandler):
     server_version = "photo-cull"
 
+    @property
+    def app(self) -> str:
+        return getattr(self.server, "app", APP)
+
     def log_message(self, *a):
         pass
 
@@ -420,7 +455,7 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(query)
         if not secrets.compare_digest((q.get("t") or [""])[0], TOKEN):
             return self._send(403, b"forbidden")
-        d = peer(app)
+        d = peer(app) or start_peer(app)
         if not d:
             return self._send(200, help_page(app), "text/html; charset=utf-8")
         extra = "".join(f"&{k}={quote(v[0])}" for k, v in q.items() if k != "t" and v)
@@ -431,21 +466,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        if url.path == "/" or (url.path == "/edit" and APP == "edit"):
-            return self._send(200, render_page(APP), "text/html; charset=utf-8")
+        if url.path == "/" or (url.path == "/edit" and self.app == "edit"):
+            return self._send(200, render_page(self.app), "text/html; charset=utf-8")
+        if url.path == "/shell":                                 # 一体窗口：两个界面放在同一页里切换
+            q = parse_qs(url.query)
+            if not secrets.compare_digest((q.get("t") or [""])[0], TOKEN):
+                return self._send(403, b"forbidden")
+            page = render_shell((q.get("start") or ["cull"])[0], (q.get("path") or [""])[0])
+            if page is None:
+                return self._send(404, b"not available")
+            return self._send(200, page, "text/html; charset=utf-8")
         if url.path.startswith("/static/"):                     # 界面的 CSS／JS（不含任何个人数据，不需要令牌）
             target = (WEB / unquote(url.path[len("/static/"):])).resolve()
             if WEB.resolve() not in target.parents or not target.is_file() or target.suffix not in STATIC_TYPES:
                 return self._send(404, b"not found")
             return self._send(200, target.read_bytes(), STATIC_TYPES[target.suffix])
         if url.path == "/ping":
-            return self._json({"app": APP})
+            return self._json({"app": self.app, "shell": set(LOCAL) == set(APP_NAMES)})
         if url.path.startswith("/open/") or url.path == "/edit":       # /edit：旧版报告里的「编辑」按钮
             target = "edit" if url.path == "/edit" else url.path.split("/")[2]
-            if target in APP_NAMES and target != APP:
+            if target in APP_NAMES and target != self.app:
                 return self._goto(target, url.query)
             return self._send(404, b"not found")
-        if (APP == "cull" and url.path in EDIT_GET) or (APP == "edit" and (url.path in CULL_GET or url.path.startswith("/out/"))):
+        if (self.app == "cull" and url.path in EDIT_GET) or (self.app == "edit" and (url.path in CULL_GET or url.path.startswith("/out/"))):
             return self._send(404, b"not found")
         if url.path == "/api/edit/thumb":                       # <img> 无法带请求头，令牌放在查询参数里
             q = parse_qs(url.query)
@@ -518,11 +561,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "bad json"}, 400)
         path = urlparse(self.path).path
         shared = path in ("/api/choose", "/api/quit", "/api/lang")
-        if not shared and (APP == "edit") != path.startswith("/api/edit/"):
+        if not shared and (self.app == "edit") != path.startswith("/api/edit/"):
             return self._send(404, b"not found")
         try:
             if path == "/api/lang":
                 return self._json({"lang": set_language(body.get("lang"))})
+            if path == "/api/open_report":                     # Mac 应用的窗口里不能开新标签页：用默认浏览器打开报告
+                if not JOB.result:
+                    raise ValueError(t("server.no_result"))
+                webbrowser.open(f"http://127.0.0.1:{self.server.server_address[1]}/out/{TOKEN}/report.html")
+                return self._json({"ok": True})
             if path == "/api/choose":
                 prompt = t("server.choose.org" if body.get("what") == "org" else "server.choose.photos")
                 return self._json({"folder": choose_folder(body.get("start", ""), prompt)})
@@ -681,10 +729,68 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, b"not found")
 
 
+def render_shell(start: str = "cull", path: str = "") -> bytes | None:
+    """web/shell/index.html：两个界面各放一个 iframe，切换时只换显示，不重新加载。"""
+    if set(LOCAL) != set(APP_NAMES):
+        return None
+    base = lambda app: f"http://127.0.0.1:{LOCAL[app]['port']}/?t={quote(TOKEN)}&shell=1"
+    edit_url = base("edit") + (f"&path={quote(path)}" if path else "")
+    page = (WEB / "shell" / "index.html").read_text(encoding="utf-8")
+    data = json.dumps(lang_bundle(("common",)), ensure_ascii=False).replace("</", "<\\/")
+    for k, v in {"__VER__": cull.VERSION, "__LANG__": i18n.html_lang(), "__I18N__": data,
+                 "__CULL_URL__": base("cull"), "__EDIT_URL__": edit_url,
+                 "__START__": start if start in APP_NAMES else "cull"}.items():
+        page = page.replace(k, v)
+    return page.encode("utf-8")
+
+
+def shell_url(start: str = "cull") -> str:
+    return f"http://127.0.0.1:{LOCAL['cull']['port']}/shell?t={quote(TOKEN)}&start={start}"
+
+
+def running_shell() -> str | None:
+    """已经有一个一体模式的进程在跑：返回它的窗口地址（再次双击启动文件时直接打开它，不再起第二份）。"""
+    d = peer("cull")
+    if not d or d.get("pid") == os.getpid():
+        return None
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{int(d['port'])}/ping", timeout=0.6) as r:
+            if not json.loads(r.read().decode("utf-8")).get("shell"):
+                return None
+    except Exception:
+        return None
+    return f"http://127.0.0.1:{int(d['port'])}/shell?t={quote(d['token'])}"
+
+
+_SERVERS: list = []
+
+
+def start_all() -> str:
+    """一体模式：在后台线程里起筛选、编辑两个服务，返回一体窗口的地址。"""
+    base = int(os.environ.get("PHOTO_CULL_PORT", "0"))
+    for i, app in enumerate(APP_NAMES):
+        srv = ThreadingHTTPServer(("127.0.0.1", base + i if base else 0), Handler)
+        srv.app = app
+        srv.daemon_threads = True
+        register(srv.server_address[1], app)
+        _SERVERS.append(srv)
+        threading.Thread(target=srv.serve_forever, daemon=True, name=f"photo-cull-{app}").start()
+    return shell_url()
+
+
+def stop_all():
+    for srv in _SERVERS:
+        try:
+            srv.shutdown()
+        except Exception:
+            pass
+
+
 def set_language(code) -> str:
     """界面切换语言：保存（两个程序共用）；筛选程序里已有结果时，按新语言重新生成报告。"""
     lang = i18n.save_lang(code)
-    if APP == "cull" and JOB.result and not JOB.running:
+    if "cull" in LOCAL and JOB.result and not JOB.running:
         try:
             with JOB.edit:
                 out, photos, meta = _current()
@@ -707,29 +813,52 @@ def main(argv=None):
     global APP
     import argparse
     import signal
+    import time
     ap = argparse.ArgumentParser(prog="gui.py", description="Photo Cull / Photo Edit")
-    ap.add_argument("--app", choices=list(APP_NAMES), default="cull", help="cull = Photo Cull, edit = Photo Edit")
+    ap.add_argument("--app", choices=list(APP_NAMES) + ["all"], default="all",
+                    help="all = both in one window (default); cull / edit = run only one")
+    ap.add_argument("--start", choices=list(APP_NAMES), default="cull", help="with --app all: which page to show first")
     ap.add_argument("--lang", choices=list(i18n.LANGS), help="interface language (default: saved choice or system language)")
     a = ap.parse_args(argv)
-    APP = a.app
     if a.lang:
         i18n.save_lang(a.lang)
-    port = int(os.environ.get("PHOTO_CULL_PORT", "0"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    register(server.server_address[1])
     for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):   # 关掉终端窗口时也清理登记
         if sig is not None:
             signal.signal(sig, lambda *_: sys.exit(0))
+    browser = not os.environ.get("PHOTO_CULL_NO_BROWSER")
+    if a.app == "all":
+        existing = running_shell()
+        if existing:                                   # 已经开着：直接打开那个窗口
+            url = existing + f"&start={a.start}"
+            print(t("server.already_running"), url, flush=True)
+            if browser:
+                webbrowser.open(url)
+            return
+        url = start_all().replace("start=cull", f"start={a.start}")
+        print(t("server.started", name=t("common.app.suite")), url, flush=True)
+        print(t("server.close_hint"), flush=True)
+        if browser:
+            threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            pass
+        return
+    APP = a.app
+    port = int(os.environ.get("PHOTO_CULL_PORT", "0"))
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.app = APP
+    register(server.server_address[1])
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={TOKEN}"
     print(t("server.started", name=app_name(APP)), url, flush=True)
     print(t("server.close_hint"), flush=True)
-    if not os.environ.get("PHOTO_CULL_NO_BROWSER"):
+    if browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
-
 
 if __name__ == "__main__":
     main()

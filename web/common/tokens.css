@@ -19,3 +19,12 @@
 /* 语言切换（三个页面通用） */
 .langsel{font:inherit;font-size:12px;color:var(--mut);background:transparent;border:1px solid var(--line);border-radius:var(--radius-s);padding:3px 6px;cursor:pointer;width:auto}
 .langsel:hover{color:var(--fg);background:var(--soft)}
+/* 一体窗口里页头的 照片筛选｜照片编辑 切换 */
+.appswitch{display:flex;gap:3px;background:var(--soft);padding:3px;border-radius:9px}
+.appswitch button{font:inherit;font-size:13px;font-weight:600;border:0;background:transparent;color:var(--mut);padding:5px 14px;border-radius:var(--radius-s);cursor:pointer;width:auto}
+.appswitch button.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px #0002}
+.appswitch button:not(.on):hover{color:var(--fg)}
+/* 一体窗口里两个界面的页头高度一致，切换时按钮不跳动 */
+.in-shell header{height:55px;padding:0 20px;box-sizing:border-box}.in-shell header h1{font-size:17px}.in-shell .brand{gap:14px}
+.in-shell .app{height:calc(100% - 55px)}
+@media (max-width:860px){.in-shell .app{height:auto}}

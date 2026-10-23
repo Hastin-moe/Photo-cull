@@ -22,11 +22,13 @@
 cull.py        照片筛选：读图、评分、AI 细评、XMP、整理输出、生成报告
 editor.py      照片编辑：解码、渲染管线、LUT、自动调整、导出
 gui.py         本地网页服务：提供 web/ 里的页面和 /api 接口
+desktop.py     桌面应用入口（Mac 应用）：一个原生窗口装两个程序
 i18n.py        多语言：读取 locales/，t("键") 取当前语言的文字
-web/           界面（前端）：common/（设计变量 tokens.css、i18n.js）、cull/、edit/、report/
+web/           界面（前端）：common/（设计变量 tokens.css、i18n.js、shell.js）、cull/、edit/、report/、shell/（一体窗口）
+packaging/     PyInstaller 配置和应用图标
 locales/       语言包：zh-CN.json、en.json、ja.json
 luts/          内置 LUT（sRGB）
-tools/         setup_env.py（部署环境）、make_release.py（打包）、check_i18n.py（检查语言包）
+tools/         setup_env.py（部署环境）、make_release.py（打包）、check_i18n.py（检查语言包）、build_mac_app.py（打包 Mac 应用）
 ```
 
 ## 代码约定

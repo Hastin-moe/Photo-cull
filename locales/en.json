@@ -26,7 +26,8 @@
   },
   "app": {
    "cull": "Photo Cull",
-   "edit": "Photo Edit"
+   "edit": "Photo Edit",
+   "suite": "Photo Tools"
   },
   "sep": "; "
  },
@@ -267,7 +268,9 @@
   "only_current_save": "Only the photo that is currently open can be saved",
   "only_current_export": "Only the photo that is currently open can be exported",
   "started": "{name} is running:",
-  "close_hint": "Close this terminal window to quit."
+  "close_hint": "Close this terminal window to quit.",
+  "already_running": "Photo Tools is already running; opening it:",
+  "app_quit": "Close the window to quit."
  },
  "flag": {
   "blur": "Out of focus or blurry",

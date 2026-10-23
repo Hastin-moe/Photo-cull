@@ -2,7 +2,7 @@
 
 [简体中文](README.md) · **English** · [日本語](README.ja.md)
 
-photo-cull is two **independent programs**, each with its own launcher. Run either one, or both side by side:
+photo-cull contains two programs that live in **one window** — switch between them at the top right (⌘1/⌘2) and both keep their state. On macOS it can be packaged as a standalone **照片工具.app** that needs no Terminal (see “Mac app” below):
 
 - **Photo Cull** (double-click `启动筛选.command` on macOS / `启动筛选.bat` on Windows): technical culling on your own computer — focus, blur, exposure, faces and closed eyes, plus grouping of bursts and repeated shots of the same scene. Shortlisted photos can then get an aesthetic review from **Claude, ChatGPT, Grok, Gemini, DeepSeek**, or any OpenAI-compatible vision model (Qwen, Kimi, OpenRouter, a local Ollama, …). **Ratings and color labels** are written to XMP, which Lightroom Classic and Capture One both read, and you get an interactive web report.
 - **Photo Edit** (double-click `启动编辑.command` / `启动编辑.bat`; basic): global adjustments with curves, a histogram and waveform scopes; apply `.cube` LUTs and Lightroom/Photoshop XMP presets; export JPEG or 16-bit TIFF. Supports Leica DNG, Panasonic DNG, every Sony ARW and Fujifilm RAF.
@@ -60,9 +60,20 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
+## Mac app (recommended)
+
+Double-click **`打包Mac应用.command`** (build Mac app) in the tool folder to create `dist/mac/照片工具.app`:
+- it bundles Python and every dependency, so it also runs on other Macs (Apple silicon, macOS 11 or later);
+- a native window with no Terminal and no browser; Photo Cull and Photo Edit switch inside the same window;
+- the first build downloads the packaging tools (about 3–8 minutes) into a separate `.venv-build`, leaving your `.venv` alone;
+- after building it runs a self-test (dependencies, built-in LUTs, both services) and creates `dist/照片工具-<version>-macOS-app.zip` to share.
+
+Drag `照片工具.app` into Applications and open it from Launchpad or the Dock; close the window to quit. Logs are in `~/.photo-cull/logs/app.log`, and the build log in `dist/mac/build.log`.
+If you download an app someone else built, right-click → Open the first time (it is not notarized by Apple).
+
 ## Using the interface
 
-Double-click **`启动筛选.command`** to open Photo Cull in your browser, or **`启动编辑.command`** for Photo Edit. Each has a link at the top right (“Photo Edit ↗” / “Photo Cull ↗”) that opens the other program in a new tab if it is running, or tells you which launcher to start.
+Double-click **`启动筛选.command`** or **`启动编辑.command`**: your browser opens the same Photo Tools window, starting on Photo Cull or Photo Edit. Switch with “Photo Cull | Photo Edit” at the top right — no second launcher needed. Double-clicking a launcher again just opens the existing window instead of starting another copy.
 
 Photo Cull:
 
@@ -78,9 +89,9 @@ Photo Cull:
    - click ★ to change a rating or ✕ to reject — changes are written to the RAW and the JPEG immediately;
    - tick the box on a photo and click “Delete selected”, or “Delete all rejects”; paired files and their XMP go to the Trash together;
    - click “Organize by current ratings” after reviewing to sort into the output folder using your edited ratings;
-   - click “Edit” on a photo to open it in Photo Edit in a new tab (Photo Edit must be running).
+   - click “Edit” on a photo to switch to Photo Edit with that photo open.
 
-Everything runs locally on 127.0.0.1 and is not reachable from other computers. Close a program’s terminal window to quit it.
+Everything runs locally on 127.0.0.1 and is not reachable from other computers. Close the terminal window to quit.
 If macOS says the app “can’t be opened because it is from an unidentified developer”: right-click the launcher → Open → Open.
 
 ## Models for AI review

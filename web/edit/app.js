@@ -2,7 +2,10 @@
 const Q=new URLSearchParams(location.search),TOKEN=Q.get("t")||"";const $=id=>document.getElementById(id);
 document.querySelectorAll(".xlink").forEach(a=>a.href=a.dataset.href+"?t="+encodeURIComponent(TOKEN));
 const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-Token":TOKEN,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j});
-applyI18n();langMenu($("lang"),v=>api("/api/lang",{lang:v}));
+applyI18n();langMenu($("lang"),v=>api("/api/lang",{lang:v}));if(window.shellNav)shellNav("edit");
+/* 一体窗口里，从筛选报告点「编辑」：外层发来要打开的照片 */
+addEventListener("message",e=>{if(e.source!==window.parent)return;const d=e.data||{};
+ if(d.pc=="open"&&d.path){const folder=d.path.replace(/[\\/][^\\/]+$/,"");if(folder==$("folder").value.trim()&&files.some(f=>f.path==d.path))openPhoto(d.path);else openFolder(folder,d.path)}});
 ["6000","4000","2048"].forEach(v=>document.querySelector(`#size option[value="${v}"]`).textContent=T("edit.export.long_edge",{n:v}));
 const BUILTIN_LABEL=T("edit.lib.builtin_label");$("libRoot").placeholder=BUILTIN_LABEL;
 const SL=[["temp",-100,100,1],["tint",-100,100,1],["exposure",-5,5,0.05],["contrast",-100,100,1],["highlights",-100,100,1],["shadows",-100,100,1],["whites",-100,100,1],["blacks",-100,100,1],["clarity",-100,100,1],["vibrance",-100,100,1],["saturation",-100,100,1]];
@@ -176,7 +179,10 @@ async function openPhoto(path){pill("edit.pill.decoding","run");warn("");try{con
   const mode=T("edit.mode."+info.mode);$("exif").textContent=(info.exif?info.exif+" · ":"")+mode+" · "+T("edit.decode_ms",{ms:info.decode_ms});
   warn(info.warning||"");$("empty").classList.add("hidden");$("img").classList.add("hidden");$("loading").classList.remove("hidden");
   $("autoNote").textContent="";["auto","compare","copy","paste","reset","export"].forEach(k=>$(k).disabled=false);if(!window._copied)$("paste").disabled=true;
-  listUI();syncUI();schedule("full")}catch(e){pill("edit.pill.error","err");warn(T("edit.err.open",{err:e.message}))}}
+  listUI();syncUI();schedule("full");
+  try{const u=new URL(location.href);u.searchParams.set("path",path);history.replaceState(null,"",u.href)}catch(e){}   // 刷新后还打开这一张
+  if(window.shellPost)shellPost({pc:"edit-path",path});
+ }catch(e){pill("edit.pill.error","err");warn(T("edit.err.open",{err:e.message}))}}
 $("openFolder").onclick=()=>openFolder();$("folder").onkeydown=e=>{if(e.key=="Enter")openFolder()};$("rawOnly").onchange=listUI;
 $("pick").onclick=async()=>{try{const r=await api("/api/choose",{start:$("folder").value});if(r.folder)openFolder(r.folder)}catch(e){alert(e.message)}};
 // ───── 工具栏
