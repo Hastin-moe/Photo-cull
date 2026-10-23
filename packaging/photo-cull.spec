@@ -18,6 +18,12 @@ for pkg in ("rawpy", "pillow_heif"):
     binaries += collect_dynamic_libs(pkg)
     datas += collect_data_files(pkg)
 datas += collect_data_files("certifi")
+# 人脸／闭眼检测用的 Haar 模型（cv2/data/*.xml）：OpenCV 的 hook 不带这些文件，单独加上
+import importlib.util
+_cv2 = importlib.util.find_spec("cv2")
+if _cv2 and _cv2.origin:
+    _xml = Path(_cv2.origin).parent / "data"
+    datas += [(str(f), "cv2/data") for f in sorted(_xml.glob("*.xml"))]
 
 a = Analysis(
     [str(ROOT / "desktop.py")],
