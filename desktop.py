@@ -22,6 +22,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 LOG_DIR = Path.home() / ".photo-cull" / "logs"
 
 
+def _load_cv2_frozen():
+    """打包后的应用里直接加载 OpenCV 的二进制模块。
+
+    OpenCV 的 cv2/__init__.py 是一个「加载器」：它改 sys.path 后再 import 一次 cv2 去找二进制模块。
+    在 .app 里 Frameworks 目录排在 sys.path 前面，第二次 import 又找回 cv2 这个包本身，于是报
+    「recursion is detected during loading of cv2 binary extensions」。这里跳过加载器，直接载入
+    cv2*.so，并补上程序用到的 cv2.data.haarcascades（人脸检测模型的位置）。"""
+    if not getattr(sys, "frozen", False) or "cv2" in sys.modules:
+        return
+    base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)) / "cv2"
+    so = next(iter(sorted(base.glob("cv2*.so"))), None)
+    if so is None:
+        return
+    import importlib.machinery
+    import importlib.util
+    import types
+    try:
+        loader = importlib.machinery.ExtensionFileLoader("cv2", str(so))
+        spec = importlib.util.spec_from_file_location("cv2", str(so), loader=loader)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["cv2"] = mod
+        loader.exec_module(mod)
+    except Exception as e:                           # noqa: BLE001
+        sys.modules.pop("cv2", None)
+        print("cv2 直接加载失败：", e, file=sys.stderr)
+        return
+    data = types.ModuleType("cv2.data")
+    data.haarcascades = str((base / "data").resolve()) + os.sep
+    mod.data = data
+    sys.modules["cv2.data"] = data
+
+
 def _log_to_file():
     """打包后的应用没有终端：把输出写到 ~/.photo-cull/logs/app.log，出问题时可以发回来看。"""
     if not getattr(sys, "frozen", False) or os.environ.get("PHOTO_CULL_CONSOLE"):
@@ -54,6 +86,12 @@ def selftest() -> int:
     import editor
     import i18n
     n = len(list(editor.LUT_DIR.rglob("*.cube")))
+    try:
+        import cull
+        c = cull._cascade("haarcascade_frontalface_default.xml")
+        report("人脸检测模型", c is not None, getattr(__import__("cv2").data, "haarcascades", ""))
+    except Exception as e:                           # noqa: BLE001
+        report("人脸检测模型", False, f"{type(e).__name__}: {e}")
     report("内置 LUT", n >= 39, f"{n} 个（{editor.LUT_DIR}）")
     report("语言包", all((i18n.LOCALE_DIR / f"{k}.json").is_file() for k in i18n.LANGS), str(i18n.LOCALE_DIR))
     report("界面文件", (gui.WEB / "shell" / "index.html").is_file(), str(gui.WEB))
@@ -76,6 +114,7 @@ def selftest() -> int:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    _load_cv2_frozen()
     if "--selftest" in argv:
         return selftest()
     _log_to_file()
