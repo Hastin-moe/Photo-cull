@@ -19,7 +19,7 @@ import webbrowser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-LOG_DIR = Path.home() / ".photo-cull" / "logs"
+from photo_cull.paths import LOG_DIR, WEBVIEW_DIR  # noqa: E402
 
 
 def _load_cv2_frozen():
@@ -82,32 +82,32 @@ def selftest() -> int:
             report(mod, True, getattr(m, "__version__", ""))
         except Exception as e:                       # noqa: BLE001
             report(mod, False, f"{type(e).__name__}: {e}")
-    import gui
-    import editor
-    import i18n
-    n = len(list(editor.LUT_DIR.rglob("*.cube")))
+    from photo_cull import i18n
+    from photo_cull.paths import LUT_DIR, WEB
+    from photo_cull.server import apps, runtime
+    n = len(list(LUT_DIR.rglob("*.cube")))
     try:
-        import cull
-        c = cull._cascade("haarcascade_frontalface_default.xml")
+        from photo_cull.cull.analysis import _cascade
+        c = _cascade("haarcascade_frontalface_default.xml")
         report("人脸检测模型", c is not None, getattr(__import__("cv2").data, "haarcascades", ""))
     except Exception as e:                           # noqa: BLE001
         report("人脸检测模型", False, f"{type(e).__name__}: {e}")
-    report("内置 LUT", n >= 39, f"{n} 个（{editor.LUT_DIR}）")
+    report("内置 LUT", n >= 39, f"{n} 个（{LUT_DIR}）")
     report("语言包", all((i18n.LOCALE_DIR / f"{k}.json").is_file() for k in i18n.LANGS), str(i18n.LOCALE_DIR))
-    report("界面文件", (gui.WEB / "shell" / "index.html").is_file(), str(gui.WEB))
-    url = gui.start_all()
+    report("界面文件", (WEB / "shell" / "index.html").is_file(), str(WEB))
+    url = runtime.start_all()
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         html_ = op.open(url, timeout=5).read().decode("utf-8")
         report("一体窗口页面", "f-cull" in html_ and "f-edit" in html_)
         for app in ("cull", "edit"):
-            d = gui.LOCAL[app]
+            d = apps.LOCAL[app]
             ping = json.loads(op.open(f"http://127.0.0.1:{d['port']}/ping", timeout=5).read())
             page = op.open(f"http://127.0.0.1:{d['port']}/?t={d['token']}&shell=1", timeout=5).read().decode("utf-8")
             report(f"{app} 服务", ping.get("app") == app and "window.I18N" in page)
     except Exception as e:                           # noqa: BLE001
         report("服务", False, f"{type(e).__name__}: {e}")
-    gui.stop_all()
+    runtime.stop_all()
     print("自检通过" if ok else "自检有问题", flush=True)
     return 0 if ok else 1
 
@@ -118,9 +118,9 @@ def main(argv=None) -> int:
     if "--selftest" in argv:
         return selftest()
     _log_to_file()
-    import gui
-    from i18n import t
-    url = gui.running_shell() or gui.start_all()      # 已经有一份在跑（比如用启动文件开的）就直接用它
+    from photo_cull.i18n import t
+    from photo_cull.server import runtime
+    url = runtime.running_shell() or runtime.start_all()      # 已经有一份在跑（比如用启动文件开的）就直接用它
     print("shell:", url, flush=True)
     try:
         import webview
@@ -134,13 +134,13 @@ def main(argv=None) -> int:
         except KeyboardInterrupt:
             return 0
     webview.create_window(t("common.app.suite"), url, width=1440, height=920, min_size=(1100, 700), text_select=True)
-    storage = Path.home() / ".photo-cull" / "webview"       # 记住界面里的小设置（缩略图大小、面板折叠等）
+    storage = WEBVIEW_DIR       # 记住界面里的小设置（缩略图大小、面板折叠等）
     storage.mkdir(parents=True, exist_ok=True)
     try:
         webview.start(private_mode=False, storage_path=str(storage), debug=bool(os.environ.get("PHOTO_CULL_DEBUG")))
     except TypeError:                                  # 旧版 pywebview 没有这些参数
         webview.start()
-    gui.stop_all()
+    runtime.stop_all()
     return 0
 
 

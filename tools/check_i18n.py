@@ -3,7 +3,7 @@
     python3 tools/check_i18n.py
 
 新增或修改界面文字时请运行一次；有问题会列出来并以非零状态退出（适合放进 CI）。
-添加新语言：复制 locales/en.json 为 locales/<代码>.json 翻译，再在 i18n.py 的 LANGS 里登记。
+添加新语言：复制 locales/en.json 为 locales/<代码>.json 翻译，再在 photo_cull/i18n.py 的 LANGS 里登记。
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-import i18n  # noqa: E402
+from photo_cull import i18n  # noqa: E402
 
 PH = re.compile(r"\{(\w+)\}")
 # 代码里直接写出的键：t("x.y")、T("x.y")、data-i18n*="x.y"

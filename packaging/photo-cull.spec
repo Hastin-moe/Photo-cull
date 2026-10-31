@@ -5,11 +5,11 @@ import os
 import re
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 ROOT = Path(SPECPATH).resolve().parent
-VERSION = re.search(r'^VERSION = "([^"]+)"', (ROOT / "cull.py").read_text(encoding="utf-8"), re.M).group(1)
-SHORT = ".".join((re.findall(r"\d+", VERSION) + ["0", "0"])[:3])       # 1.7-beta → 1.7.0
+VERSION = re.search(r'^VERSION = "([^"]+)"', (ROOT / "photo_cull" / "version.py").read_text(encoding="utf-8"), re.M).group(1)
+SHORT = ".".join((re.findall(r"\d+", VERSION) + ["0", "0"])[:3])       # 1.8-beta → 1.8.0
 
 datas = [(str(ROOT / d), d) for d in ("web", "locales", "luts")]
 binaries = []
@@ -30,7 +30,7 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["cull", "editor", "gui", "i18n", "webview.platforms.cocoa", "exifread", "send2trash",
+    hiddenimports=collect_submodules("photo_cull") + ["webview.platforms.cocoa", "exifread", "send2trash",
                    "send2trash.mac", "pillow_heif", "rawpy", "anthropic", "openai"],
     excludes=["tkinter", "matplotlib", "IPython", "PySide6", "PyQt5", "PyQt6", "pytest", "webview.platforms.qt",
               "webview.platforms.gtk", "webview.platforms.winforms", "webview.platforms.edgechromium"],
@@ -52,7 +52,7 @@ app = BUNDLE(
         "CFBundleShortVersionString": SHORT,
         "CFBundleVersion": VERSION,
         "CFBundleDevelopmentRegion": "zh_CN",
-        "CFBundleLocalizations": ["zh_CN", "en", "ja"],
+        "CFBundleLocalizations": ["zh_CN", "en", "ja", "ko"],
         "LSApplicationCategoryType": "public.app-category.photography",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,

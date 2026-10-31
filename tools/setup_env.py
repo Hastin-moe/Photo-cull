@@ -124,9 +124,9 @@ def check_modules(py: Path) -> list:
 def check_files() -> list:
     """工具本身是否完整：程序文件、内置 LUT、设置文件夹能否写入。"""
     out = []
-    missing = [f for f in ("cull.py", "gui.py", "editor.py", "i18n.py", "requirements.txt",
+    missing = [f for f in ("cull.py", "gui.py", "photo_cull/__init__.py", "photo_cull/version.py", "requirements.txt",
                                     "web/cull/index.html", "web/edit/index.html", "web/report/report.html", "web/shell/index.html",
-                                    "locales/zh-CN.json", "locales/en.json", "locales/ja.json") if not (ROOT / f).is_file()]
+                                    "locales/zh-CN.json", "locales/en.json", "locales/ja.json", "locales/ko.json") if not (ROOT / f).is_file()]
     out.append(("程序文件", not missing, "完整" if not missing else "缺少 " + "、".join(missing)))
     luts = list((ROOT / "luts").rglob("*.cube")) if (ROOT / "luts").is_dir() else []
     out.append(("内置 LUT", len(luts) >= 39, f"{len(luts)} 个"))

@@ -51,7 +51,7 @@ def pick_python() -> str:
 
 
 def version() -> str:
-    return re.search(r'^VERSION = "([^"]+)"', (ROOT / "cull.py").read_text(encoding="utf-8"), re.M).group(1)
+    return re.search(r'^VERSION = "([^"]+)"', (ROOT / "photo_cull" / "version.py").read_text(encoding="utf-8"), re.M).group(1)
 
 
 class Tee:

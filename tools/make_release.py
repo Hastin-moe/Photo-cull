@@ -6,12 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-import cull  # noqa: E402
+from photo_cull.version import VERSION as VER  # noqa: E402
 
-VER = cull.VERSION
-COMMON = ["cull.py", "gui.py", "editor.py", "i18n.py", "desktop.py", "requirements.txt", "README.md", "README.en.md", "README.ja.md",
+COMMON = ["cull.py", "gui.py", "desktop.py", "requirements.txt", "README.md", "README.en.md", "README.ja.md", "README.ko.md",
           "LICENSE", "luts/说明.txt", "tools/setup_env.py"]
-TREES = ["web", "locales"]          # 整个文件夹打包：界面（HTML／CSS／JS）和语言包
+TREES = ["photo_cull", "web", "locales"]          # 整个文件夹打包：程序、界面（HTML／CSS／JS）和语言包
 PLATFORM = {
     "Windows": ["安装环境.bat", "启动筛选.bat", "启动编辑.bat", "windows/run.ps1", "windows/setup.ps1"],
     "macOS": ["安装环境.command", "启动筛选.command", "启动编辑.command", "打包Mac应用.command",
@@ -63,7 +62,7 @@ def build(platform: str) -> Path:
     out.parent.mkdir(exist_ok=True)
     files = COMMON + PLATFORM[platform]
     luts = sorted(p for p in (ROOT / "luts").rglob("*.cube"))
-    luts += sorted(p for d in TREES for p in (ROOT / d).rglob("*") if p.is_file() and not p.name.startswith("."))
+    luts += sorted(p for d in TREES for p in (ROOT / d).rglob("*") if p.is_file() and not p.name.startswith(".") and "__pycache__" not in p.parts)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for rel in files:
             src = ROOT / rel

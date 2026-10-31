@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+from .paths import LOCALE_DIR, LANG_FILE
+
 import json
 import locale
 import os
@@ -20,11 +22,9 @@ import sys
 import threading
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-LOCALE_DIR = ROOT / "locales"
 LANGS = {"zh-CN": "简体中文", "en": "English", "ja": "日本語"}
 SOURCE = "zh-CN"                       # 原文语言：新文字先写进 zh-CN.json
-CONFIG = Path.home() / ".photo-cull" / "lang.json"
+CONFIG = LANG_FILE
 
 _lock = threading.Lock()
 _tables: dict = {}                     # 语言 → 扁平字典（已合并回退）
