@@ -1,4 +1,4 @@
-"""多语言（简体中文／English／日本語）。
+"""多语言（简体中文／English／日本語／한국어）。
 
 文字都放在 locales/<语言>.json 里，按模块分组（common、cull、report、edit、server…），
 程序里用 t("cull.run") 取当前语言的文字，网页用同一份语言包（gui.py 在页面里注入）。
@@ -20,9 +20,8 @@ import os
 import subprocess
 import sys
 import threading
-from pathlib import Path
 
-LANGS = {"zh-CN": "简体中文", "en": "English", "ja": "日本語"}
+LANGS = {"zh-CN": "简体中文", "en": "English", "ja": "日本語", "ko": "한국어"}
 SOURCE = "zh-CN"                       # 原文语言：新文字先写进 zh-CN.json
 CONFIG = LANG_FILE
 
@@ -42,6 +41,8 @@ def normalize(code) -> str | None:
         return "zh-CN"
     if c.startswith("ja"):
         return "ja"
+    if c.startswith("ko"):
+        return "ko"
     if c.startswith("en"):
         return "en"
     return None
@@ -173,7 +174,7 @@ def save_lang(code) -> str:
 
 
 def html_lang(lang: str | None = None) -> str:
-    return {"zh-CN": "zh-CN", "en": "en", "ja": "ja"}[lang or current()]
+    return {"zh-CN": "zh-CN", "en": "en", "ja": "ja", "ko": "ko"}[lang or current()]
 
 
 def bundle(prefixes=None, lang: str | None = None) -> dict:

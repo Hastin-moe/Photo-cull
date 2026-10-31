@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from ..cull.scoring import HIGHLIGHT_WEIGHTS, PICK_AI, PICK_LOCAL
+
 from ..paths import SETTINGS
 
 from ..paths import CONFIG_DIR
 
 import json
 import os
-from pathlib import Path
 
 from ..cull.ai.providers import PROVIDERS
 
@@ -19,12 +20,15 @@ DEFAULTS = {
     **{"key_" + k: "" for k in PROVIDERS}, "remember_key": False, "base_url_custom": "",
     "edit_folder": "", "edit_library": "",
     "xmp": True, "jpeg_embed": True, "xmp_all": False, "dry_run": True,
-    "org": False, "org_dir": "", "org_result": True, "org_format": True, "org_rename": True, "org_move": False,
+    "org": False, "org_dir": "", "org_result": True, "org_category": True, "org_format": True, "org_rename": True,
+    "org_move": False,
     "burst_gap": 15.0, "scene_gap": 60.0, "similarity": 0.6, "blur_warn": 0.58, "blur_reject": 0.75,
     "clip_high": 0.04, "clip_low": 0.30, "workers": 4,
+    "pick_ai": PICK_AI, "pick_local": PICK_LOCAL, **{"w_" + k: v for k, v in HIGHLIGHT_WEIGHTS.items()},
 }
 KEYS = tuple("key_" + k for k in PROVIDERS)
-TUNING = {"burst_gap", "scene_gap", "similarity", "blur_warn", "blur_reject", "clip_high", "clip_low"}
+TUNING = {"burst_gap", "scene_gap", "similarity", "blur_warn", "blur_reject", "clip_high", "clip_low",
+          "pick_ai", "pick_local", *("w_" + k for k in HIGHLIGHT_WEIGHTS)}
 SETTINGS_VERSION = 3
 
 

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+from ..paths import REPORT_DIR
+
+from ..cull.scoring import set_manual
+
+from ..cull.organize import Layout
+
+from types import SimpleNamespace
+
 import os
 import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from ..cull.organize import org_resync, org_trash_copies, organize, result_dirs
+from ..cull.organize import org_resync, org_trash_copies, organize
 from ..cull.report import load_results, summarize, write_report
-from ..cull.scoring import label_for
 from ..cull.trash import TRASH_DIR, trash_photo
 from ..cull.xmp import apply_marks
 from ..i18n import t
@@ -25,19 +32,20 @@ def _current():
     return out, photos, meta
 
 
-def mark_photo(path: str, stars: int) -> dict:
-    if not isinstance(stars, int) or not -1 <= stars <= 5:
-        raise ValueError(t("server.bad_stars"))
+def mark_photo(path: str, score: int) -> dict:
+    """报告里手动打分：1–10 分，−1 为淘汰，0 为清除分数。"""
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not -1 <= score <= 10:
+        raise ValueError(t("server.bad_score"))
     with JOB.edit:
         out, photos, meta = _current()
         p = next((x for x in photos if x.path == path and not x.trashed), None)
         if p is None:
             raise ValueError(t("server.photo_not_found"))
-        p.stars, p.label, p.manual = stars, label_for(stars) if stars else "", True
+        set_manual(p, score, SimpleNamespace(**(meta.get("scoring") or {})))
         # 人工调整是明确的操作：即使上次是演练模式也写入，并同步到配对的每个文件
         written = apply_marks(p, False, meta.get("jpeg_embed", True), meta.get("xmp_all", False))
         moved = None
-        try:   # 整理过的话，输出文件夹里的这张也换到新星级对应的位置／名字
+        try:   # 整理过的话，输出文件夹里的这张也换到新分数对应的位置／名字
             st = org_resync(p, photos, meta)
             moved = st and st["files"]
         except Exception as e:
@@ -72,7 +80,7 @@ def trash_photos(paths: list) -> dict:
 
 
 def organize_now(o: dict) -> dict:
-    """在报告里复核完之后，按当前星级整理。"""
+    """在报告里复核完之后，按当前分数整理。"""
     with JOB.edit:
         out, photos, meta = _current()
         src = Path(meta.get("src") or out.parent)
@@ -80,18 +88,20 @@ def organize_now(o: dict) -> dict:
         if not target.is_absolute():
             target = src / target
         prev = meta.get("organized") or {}
-        dirs = result_dirs(prev) if prev.get("out") and Path(prev["out"]) == target.resolve() else None
-        st = organize(photos, target, bool(o.get("org_result", True)), bool(o.get("org_format", True)),
-                           bool(o.get("org_rename", True)), bool(o.get("org_move")), dirs=dirs)
+        same = prev.get("out") and Path(prev["out"]) == target.resolve()
+        lay = Layout.from_record(prev if same else None, by_result=bool(o.get("org_result", True)),
+                                 by_category=bool(o.get("org_category", True)), by_format=bool(o.get("org_format", True)),
+                                 rename=bool(o.get("org_rename", True)))
+        st = organize(photos, target, lay, move=bool(o.get("org_move")))
         meta["organized"] = st
         write_report(photos, out, meta)
         JOB.result = summarize(photos, out, meta)
-        _remember(**{k: o[k] for k in ("org_dir", "org_result", "org_format", "org_rename", "org_move") if k in o})
+        _remember(**{k: o[k] for k in ("org_dir", "org_result", "org_category", "org_format", "org_rename", "org_move") if k in o})
         return {"organized": JOB.result["organized"], "summary": JOB.result}
 
 
 def load_previous(folder: str) -> dict:
-    out = Path(folder).expanduser() / "photo-cull-report"
+    out = Path(folder).expanduser() / REPORT_DIR
     if not (out / "results.json").is_file():
         raise ValueError(t("server.no_prev"))
     photos, meta = load_results(out)

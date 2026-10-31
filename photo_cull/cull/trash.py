@@ -6,7 +6,7 @@ from pathlib import Path
 from .model import Photo
 from .xmp import sidecar_path
 
-TRASH_DIR = "_待删除"     # 没有 send2trash 时的退路文件夹（名字固定，不随界面语言变化）
+from ..paths import TRASH_DIR  # noqa: F401  （没有 send2trash 时的退路文件夹）
 
 
 # ───────────────────────── 同步删除（移到废纸篓） ─────────────────────────

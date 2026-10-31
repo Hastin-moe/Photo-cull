@@ -25,7 +25,9 @@ USES = [
 # 由程序拼出来的键（前缀＋变量），在这里登记对应的取值，用于检查
 DYNAMIC = {
     "flag.": ["blur", "soft", "under", "over", "clip_high", "clip_low", "eyes", "xmp_fail"],
-    "tier.": ["candidate", "alt", "reject", "error"],
+    "cat.": ["pick", "moment", "usable", "reject", "error"],
+    "cull.org.folder.": ["keep", "reject", "pick", "moment", "usable", "group"],
+    "common.stat.": ["total", "pairs", "bursts", "pick", "moment", "usable", "reject", "error", "trashed"],
     "genre.": ["portrait", "street", "landscape", "architecture", "event", "other"],
 }
 

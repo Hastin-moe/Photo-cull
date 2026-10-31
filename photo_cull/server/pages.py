@@ -5,7 +5,6 @@ from ..paths import WEB
 import json
 import os
 import sys
-from pathlib import Path
 from urllib.parse import quote  # noqa: E402
 
 from .. import i18n

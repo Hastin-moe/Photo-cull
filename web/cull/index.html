@@ -47,8 +47,9 @@
    <div class="field"><label data-i18n="cull.org.mode">方式</label><div class="seg" id="orgMode"><button data-m="0" data-i18n="cull.org.copy">复制</button><button data-m="1" data-i18n="cull.org.move">移动</button></div>
     <span class="hint" id="orgHint" style="margin-top:6px"></span></div>
    <label class="chk"><input type="checkbox" id="org_result"><span><span data-i18n="cull.org.by_result">分成 保留／淘汰 两个文件夹</span><small data-i18n="cull.org.by_result_hint"></small></span></label>
+   <label class="chk"><input type="checkbox" id="org_category"><span><span data-i18n="cull.org.by_category">保留里再分 精选／连拍瞬间／可用</span><small data-i18n="cull.org.by_category_hint"></small></span></label>
    <label class="chk"><input type="checkbox" id="org_format"><span data-i18n="cull.org.by_format">每个里面再分 JPEG／RAW</span></label>
-   <label class="chk"><input type="checkbox" id="org_rename"><span><span data-i18n="cull.org.rename">重命名为 星级_机型_原文件名</span><small data-i18n="cull.org.rename_hint"></small></span></label>
+   <label class="chk"><input type="checkbox" id="org_rename"><span><span data-i18n="cull.org.rename">重命名为 分数_机型_原文件名</span><small data-i18n="cull.org.rename_hint"></small></span></label>
    <p class="hint" id="orgEx" style="margin:6px 0 0;font-family:var(--font-mono);word-break:break-all;white-space:pre-wrap"></p>
   </div>
  </section>
@@ -62,8 +63,19 @@
    <div class="field"><label data-i18n="cull.adv.clip_high">高光溢出提示</label><input type="number" id="clip_high" step="0.01" min="0" max="1"></div>
    <div class="field"><label data-i18n="cull.adv.clip_low">暗部死黑提示</label><input type="number" id="clip_low" step="0.05" min="0" max="1"></div>
    <div class="field"><label data-i18n="cull.adv.workers">并行数</label><input type="number" id="workers" step="1" min="1" max="16"></div>
+   <div class="field"><label data-i18n="cull.adv.pick_ai">精选线（AI 细评）</label><input type="number" id="pick_ai" step="0.5" min="1" max="10"></div>
+   <div class="field"><label data-i18n="cull.adv.pick_local">精选线（仅本地）</label><input type="number" id="pick_local" step="0.5" min="1" max="6"></div>
   </div>
   <p class="hint" style="margin-top:10px" data-i18n="cull.adv.hint"></p>
+  <p class="ct" style="margin-top:14px" data-i18n="cull.adv.weights">精彩帧权重</p>
+  <div class="grid2">
+   <div class="field"><label data-i18n="cull.adv.w_sharp">主体清晰</label><input type="number" id="w_sharp" step="0.05" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.w_eyes">睁眼</label><input type="number" id="w_eyes" step="0.05" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.w_smile">笑容</label><input type="number" id="w_smile" step="0.05" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.w_exposure">曝光</label><input type="number" id="w_exposure" step="0.05" min="0" max="1"></div>
+   <div class="field"><label data-i18n="cull.adv.w_subject">主体突出</label><input type="number" id="w_subject" step="0.05" min="0" max="1"></div>
+  </div>
+  <p class="hint" style="margin-top:10px" data-i18n="cull.adv.weights_hint"></p>
  </details></section>
  <div class="runbar"><button class="primary" id="run" data-i18n="cull.run">开始筛选</button><button id="cancel" class="hidden" data-i18n="common.cancel">取消</button></div>
 </aside>

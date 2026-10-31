@@ -17,10 +17,10 @@ main{max-width:1500px;margin:auto;padding:16px;display:grid;grid-template-column
 .n{font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.st{letter-spacing:1px;white-space:nowrap}
 .tag{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
 .pair{font-size:10px;padding:0 5px;border-radius:4px;background:var(--line);color:var(--mut);margin-left:4px;font-weight:600}
-.t-candidate{color:var(--g);border-color:var(--g)}.t-alt{color:var(--y);border-color:var(--y)}.t-reject,.t-error{color:var(--r);border-color:var(--r)}
+.t-pick{color:var(--g);border-color:var(--g)}.t-moment{color:var(--focus);border-color:var(--focus)}.t-usable{color:var(--y);border-color:var(--y)}.t-reject,.t-error{color:var(--r);border-color:var(--r)}
 .fl{font-size:11px;color:var(--r)}.cm{font-size:12px}.lb{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px}
 .rate{display:flex;gap:2px}.rate button{border:0;background:none;padding:0 2px;font-size:16px;line-height:1;border-radius:4px;color:var(--mut)}
-.rate button.on{color:var(--y);background:none}.rate button.x.on{color:var(--r)}.rate button:hover{background:var(--line)}
+.rate button.on{color:var(--y);background:none}.rate.ten{gap:0}.rate.ten button{font-size:13px;padding:0 1px}.rate button.ai{opacity:.85}.rate button.ai.on{color:var(--g)}.rate .sv{min-width:1.6em;text-align:right;font-size:12px;margin-left:4px;color:var(--fg)}.rate button.x.on{color:var(--r)}.rate button:hover{background:var(--line)}
 #zoom{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:9;padding:16px}#zoom img{max-width:100%;max-height:100%}
 .modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;z-index:10;padding:16px}
 .modal.show{display:flex}.dlg{background:var(--card);border-radius:14px;padding:20px;max-width:440px;width:100%}

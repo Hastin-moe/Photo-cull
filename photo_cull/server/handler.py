@@ -226,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/mark":
                 if JOB.running:
                     return self._json({"error": t("server.busy_mark")}, 409)
-                return self._json(mark_photo(str(body.get("path", "")), body.get("stars")))
+                return self._json(mark_photo(str(body.get("path", "")), body.get("score")))
             if path == "/api/trash":
                 if JOB.running:
                     return self._json({"error": t("server.busy_trash")}, 409)

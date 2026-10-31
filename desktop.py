@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import threading
 import time
 import webbrowser
 from pathlib import Path

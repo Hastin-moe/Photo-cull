@@ -107,13 +107,13 @@ class TiffRaw:
     def previews(self):
         """按大小降序返回候选 JPEG 字节串。"""
         cands = []
-        for kind, t in self.ifds:
-            if 0x201 in t and 0x202 in t:
-                off, n = t[0x201], t[0x202]
+        for kind, tags in self.ifds:
+            if 0x201 in tags and 0x202 in tags:
+                off, n = tags[0x201], tags[0x202]
                 if isinstance(off, int) and isinstance(n, int) and n > 1000:
                     cands.append((off, n))
-            comp, photo = t.get(0x103), t.get(0x106)
-            strips, counts = t.get(0x111), t.get(0x117)
+            comp, photo = tags.get(0x103), tags.get(0x106)
+            strips, counts = tags.get(0x111), tags.get(0x117)
             # 预览：基线 JPEG（6/7）且不是 CFA／LinearRaw 原始数据
             if comp in (6, 7) and photo in (2, 6) and strips is not None and counts is not None:
                 if isinstance(strips, int):

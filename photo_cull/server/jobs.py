@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..cull.scoring import HIGHLIGHT_WEIGHTS
+
 import contextlib
 import io
 import threading
@@ -89,13 +91,16 @@ def build_argv(o: dict) -> list[str]:
     if o.get("org"):
         argv.append("--organize=" + str(o.get("org_dir") or "").strip())
         if o.get("org_result", True): argv.append("--by-result")
+        if o.get("org_category", True): argv.append("--by-category")
         if o.get("org_format", True): argv.append("--by-format")
         if o.get("org_rename", True): argv.append("--rename")
         if o.get("org_move"): argv.append("--move")
     for key, flag in [("burst_gap", "--burst-gap"), ("scene_gap", "--scene-gap"), ("similarity", "--similarity"),
                       ("blur_warn", "--blur-warn"), ("blur_reject", "--blur-reject"),
-                      ("clip_high", "--clip-high"), ("clip_low", "--clip-low"), ("workers", "--workers")]:
+                      ("clip_high", "--clip-high"), ("clip_low", "--clip-low"), ("workers", "--workers"),
+                      ("pick_ai", "--pick-ai"), ("pick_local", "--pick-local")]:
         argv += [flag, str(o.get(key, DEFAULTS[key]))]
+    argv += ["--weights", ",".join(f"{k}={float(o.get('w_' + k, DEFAULTS['w_' + k]))}" for k in HIGHLIGHT_WEIGHTS)]
     return argv
 
 

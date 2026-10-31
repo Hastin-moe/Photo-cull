@@ -31,7 +31,7 @@ QUICK = {
 5. 关闭黑色的命令行窗口即可退出对应的程序。
 
 要求：64 位 Windows 10／11（x64）。ARM 版 Windows 暂不支持。
-界面语言：简体中文／English／日本語，在程序右上角切换（Language switch at the top right）。
+界面语言：简体中文／English／日本語／한국어，在程序右上角切换（Language switch at the top right）。
 内置 39 个 LUT（Fujifilm GFX 胶片模拟 20 个、Leica Look 19 个，工作空间均为 sRGB），在照片编辑的「风格（LUT）」里直接用。
 设置、缩略图缓存放在 用户文件夹\\.photo-cull；照片的星级、编辑记录写在照片所在文件夹里。
 详细说明见 README.md（English: README.en.md，日本語：README.ja.md；可以用记事本或浏览器打开）。
@@ -49,7 +49,7 @@ QUICK = {
 5. 想要一个不需要终端的 Mac 应用：双击「打包Mac应用.command」（第一次约 3–8 分钟），
    生成 dist/mac/照片工具.app，拖到「应用程序」即可。
 
-界面语言：简体中文／English／日本語，在程序右上角切换（Language switch at the top right）。
+界面语言：简体中文／English／日本語／한국어，在程序右上角切换（Language switch at the top right）。
 内置 39 个 LUT（Fujifilm GFX 胶片模拟 20 个、Leica Look 19 个，工作空间均为 sRGB），在照片编辑的「风格（LUT）」里直接用。
 详细说明见 README.md（English: README.en.md，日本語：README.ja.md）。
 """,

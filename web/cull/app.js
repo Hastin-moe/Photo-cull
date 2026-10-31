@@ -1,7 +1,7 @@
 /* 照片筛选界面的脚本。界面文字全部来自语言包：T("键")，见 locales/*.json 的 cull 分组。 */
 const TOKEN=new URLSearchParams(location.search).get("t")||"";const $=id=>document.getElementById(id);
 const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-Token":TOKEN,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j});
-const F=["folder","recursive","remember_key","ai_alts","xmp","jpeg_embed","xmp_all","dry_run","org","org_dir","org_result","org_format","org_rename","burst_gap","scene_gap","similarity","blur_warn","blur_reject","clip_high","clip_low","workers"];
+const F=["folder","recursive","remember_key","ai_alts","xmp","jpeg_embed","xmp_all","dry_run","org","org_dir","org_result","org_category","org_format","org_rename","burst_gap","scene_gap","similarity","blur_warn","blur_reject","clip_high","clip_low","workers","pick_ai","pick_local","w_sharp","w_eyes","w_smile","w_exposure","w_subject"];
 let S={ai:false,provider:"claude",models:{},keys:{},envKeys:{},P:{},order:[],baseUrl:"",orgMove:false},since=0,timer=null;
 const OTHER="__other__";
 applyI18n();langMenu($("lang"),v=>api("/api/lang",{lang:v}));if(window.shellNav)shellNav("cull");
@@ -29,10 +29,14 @@ function setProv(p,keep){if(!keep)stash();S.provider=p;const info=S.P[p]||{name:
 function setOrgMove(v){S.orgMove=v;document.querySelectorAll("#orgMode button").forEach(b=>b.classList.toggle("on",(b.dataset.m=="1")==v));
  $("orgHint").textContent=T(v?"cull.org.move_hint":"cull.org.copy_hint");syncOrg()}
 function syncOrg(){const on=$("org").checked;$("orgBox").style.opacity=on?1:.5;
- const r=$("org_result").checked,f=$("org_format").checked,n=$("org_rename").checked,d=$("org_dir").value.trim()||T("cull.org.default_dir");
- const base=d.replace(/[\\/]+$/,"").split(/[\\/]/).pop()||d,ex=(st,file)=>[base,r?T(st=="X"?"cull.org.rejected":"cull.org.kept"):"",f?(/\.(jpe?g|heic|png)$/i.test(file)?"JPEG":"RAW"):"",(n?st+"_ILCE-1M2_":"")+file].filter(Boolean).join("/");
- $("orgEx").textContent=T("cull.org.example",{a:ex("4","DSC01234.ARW"),b:ex("X","DSC01235.JPG")})}
-function orgOpts(){return{org_dir:$("org_dir").value.trim(),org_result:$("org_result").checked,org_format:$("org_format").checked,org_rename:$("org_rename").checked,org_move:S.orgMove}}
+ const r=$("org_result").checked,c=$("org_category").checked,f=$("org_format").checked,n=$("org_rename").checked,d=$("org_dir").value.trim()||T("cull.org.default_dir");
+ $("org_category").disabled=!r;
+ const base=d.replace(/[\\/]+$/,"").split(/[\\/]/).pop()||d,
+  ex=(sc,cat,file)=>[base,r?T(cat=="reject"?"cull.org.folder.reject":"cull.org.folder.keep"):"",r&&c&&cat!="reject"?T("cull.org.folder."+cat):"",
+   r&&c&&cat=="moment"?T("cull.org.folder.group").replace("{n}","012").replace("{time}","103045"):"",
+   f?(/\.(jpe?g|heic|png)$/i.test(file)?"JPEG":"RAW"):"",(n?sc+"_ILCE-1M2_":"")+file].filter(Boolean).join("/");
+ $("orgEx").textContent=T("cull.org.example",{a:ex("08","pick","DSC01234.ARW"),m:ex("06","moment","DSC01240.ARW"),b:ex("X","reject","DSC01235.JPG")})}
+function orgOpts(){return{org_dir:$("org_dir").value.trim(),org_result:$("org_result").checked,org_category:$("org_category").checked,org_format:$("org_format").checked,org_rename:$("org_rename").checked,org_move:S.orgMove}}
 function collect(){stash();const o={ai:S.ai,provider:S.provider,org_move:S.orgMove,base_url_custom:S.baseUrl};F.forEach(k=>{const e=$(k);o[k]=e.type=="checkbox"?e.checked:e.type=="number"?Number(e.value):e.value.trim()});
  S.order.forEach(p=>{o["model_"+p]=S.models[p]||"";o["key_"+p]=S.keys[p]||""});return o}
 function fill(s){F.forEach(k=>{const e=$(k);if(e.type=="checkbox")e.checked=!!s[k];else e.value=s[k]??""});
@@ -41,7 +45,7 @@ function fill(s){F.forEach(k=>{const e=$(k);if(e.type=="checkbox")e.checked=!!s[
  $("provSeg").querySelectorAll("button").forEach(b=>b.onclick=()=>setProv(b.dataset.p));
  S.order.forEach(p=>{S.models[p]=s["model_"+p];S.keys[p]=s["key_"+p]||""});
  setAI(!!s.ai);setProv(S.P[s.provider]?s.provider:"claude",true);syncXmp();setOrgMove(!!s.org_move);
- if(!s.lang_saved){const want=(navigator.languages||[navigator.language]).map(x=>String(x).toLowerCase()).map(x=>x.startsWith("zh")?"zh-CN":x.startsWith("ja")?"ja":x.startsWith("en")?"en":"")[0];
+ if(!s.lang_saved){const want=(navigator.languages||[navigator.language]).map(x=>String(x).toLowerCase()).map(x=>x.startsWith("zh")?"zh-CN":x.startsWith("ja")?"ja":x.startsWith("ko")?"ko":x.startsWith("en")?"en":"")[0];
   if(want&&want!=LANG)api("/api/lang",{lang:want}).then(()=>location.reload()).catch(()=>{});else if(want)api("/api/lang",{lang:want}).catch(()=>{})}}
 function syncXmp(){const on=$("xmp").checked;["jpeg_embed","xmp_all"].forEach(k=>$(k).disabled=!on)}
 function pill(key,c){const p=$("pill");p.textContent=T(key);p.className="pill "+(c||"")}
@@ -50,14 +54,14 @@ function stageUI(st){const order=["analyze","ai","xmp","done"],cur=order.indexOf
   const skip=k=="ai"&&!S.runAI;el.className="stage"+(skip?" skip":cur>i?" done":cur==i?" active":"");
   let pct=cur>i?100:cur==i&&st.total?st.done/st.total*100:0;bar.style.width=(skip?0:pct)+"%";
   lab.textContent=skip?T("cull.stage.off"):cur>i?T("cull.stage.done"):cur==i&&st.total&&k!="xmp"?`${st.done}/${st.total}`:cur==i?T("cull.stage.running"):T("cull.stage.waiting")})}
-function stats(r,reload){const items=[["stat.total",r.total,""],["stat.pairs",r.pairs||0,""],["stat.top",r.top,"g"],["stat.candidate",r.candidate,"g"],["stat.alt",r.alt,"y"],["stat.reject",r.reject,"r"]];
+function stats(r,reload){const items=[["stat.total",r.total,""],["stat.pairs",r.pairs||0,""],["stat.bursts",r.bursts||0,""],["stat.pick",r.pick||0,"g"],["stat.moment",r.moment||0,"g"],["stat.usable",r.usable||0,"y"],["stat.reject",r.reject||0,"r"]];
  if(r.error)items.push(["stat.error",r.error,"r"]);if(r.trashed)items.push(["stat.trashed",r.trashed,""]);
  $("stats").style.gridTemplateColumns=`repeat(${Math.min(items.length,8)},1fr)`;
  $("stats").innerHTML=items.map(([k,v,c])=>`<div class="stat ${c}"><b>${fmtNum(v)}</b><span>${T("common."+k)}</span></div>`).join("");
  let note=r.dry_run?T("cull.done.note_dry"):r.xmp?T("cull.done.note_xmp",{n:r.xmp}):T("cull.done.note_none");
  const g=r.organized;$("revealOrg").classList.toggle("hidden",!(g&&!g.dry_run));
  if(g){const verb=T(g.mode=="move"?"cull.org.verb_move":"cull.org.verb_copy");
-  note+=" "+(g.dry_run?T("cull.done.org_dry",{verb,n:g.photos,out:g.out}):T("cull.done.org_ok",{verb,n:g.photos,kept:g.kept,rejected:g.rejected,out:g.out})+(g.errors&&g.errors.length?" "+T("cull.done.org_err",{n:g.errors.length}):""))}
+  note+=" "+(g.dry_run?T("cull.done.org_dry",{verb,n:g.photos,out:g.out}):T("cull.done.org_ok",{verb,n:g.photos,pick:g.pick||0,moment:g.moment||0,usable:g.usable||0,kept:g.kept,rejected:g.rejected,out:g.out})+(g.errors&&g.errors.length?" "+T("cull.done.org_err",{n:g.errors.length}):""))}
  $("doneNote").textContent=note;
  if(reload!==false)$("report").src=`/out/${TOKEN}/report.html?`+Date.now()}
 window.addEventListener("message",e=>{if(e.origin===location.origin&&e.data&&e.data.pc=="summary")stats(e.data.s,false)});
@@ -91,7 +95,7 @@ $("mYes").onclick=()=>{api("/api/confirm",{yes:true});$("modal").classList.remov
 $("mNo").onclick=()=>{api("/api/confirm",{yes:false});$("modal").classList.remove("show")};
 $("openReport").onclick=()=>window.SHELL?api("/api/open_report",{}).catch(e=>alert(e.message)):window.open(`/out/${TOKEN}/report.html`,"_blank");
 $("revealReport").onclick=()=>api("/api/reveal",{what:"report"});$("revealOrg").onclick=()=>api("/api/reveal",{what:"org"});
-["org","org_result","org_format","org_rename"].forEach(k=>$(k).onchange=syncOrg);$("org_dir").oninput=syncOrg;
+["org","org_result","org_category","org_format","org_rename"].forEach(k=>$(k).onchange=syncOrg);$("org_dir").oninput=syncOrg;
 $("orgMode").querySelectorAll("button").forEach(b=>b.onclick=()=>setOrgMove(b.dataset.m=="1"));
 $("pickOrg").onclick=async()=>{$("pickOrg").disabled=true;try{const r=await api("/api/choose",{start:$("org_dir").value||$("folder").value,what:"org"});if(r.folder){$("org_dir").value=r.folder;syncOrg()}}catch(e){alert(e.message)}$("pickOrg").disabled=false};
 $("orgNow").onclick=async()=>{const o=orgOpts();

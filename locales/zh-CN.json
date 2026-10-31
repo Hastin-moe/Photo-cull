@@ -17,12 +17,13 @@
   "stat": {
    "total": "总数",
    "pairs": "RAW+JPEG 配对",
-   "top": "4★以上",
-   "candidate": "入围",
-   "alt": "连拍备选",
    "reject": "淘汰",
    "error": "读取失败",
-   "trashed": "已删除"
+   "trashed": "已删除",
+   "bursts": "连拍组",
+   "pick": "精选",
+   "moment": "连拍瞬间",
+   "usable": "可用"
   },
   "app": {
    "cull": "照片筛选",
@@ -53,8 +54,8 @@
    "title": "筛选方式",
    "local": "仅本地筛选",
    "ai": "本地＋AI 细评",
-   "ai_hint": "本地先淘汰废片和连拍重复帧，只把入围照片缩小后发给所选模型，评价构图、光线、瞬间。",
-   "local_hint": "只做技术筛选，完全在本机运行，不联网、不花钱。"
+   "ai_hint": "本地先淘汰废片、每组连拍挑出精彩帧，只把这些照片缩小后发给所选模型，评价构图、光线、瞬间。6 分以上只由 AI 给出。",
+   "local_hint": "只做技术筛选，完全在本机运行，不联网、不花钱。本地分最高 6 分。"
   },
   "ai": {
    "provider": "评价模型",
@@ -71,7 +72,7 @@
    "key_custom": "填服务商提供的 API Key（也可以用环境变量 {env}）。",
    "remember": "记住在这台电脑",
    "remember_hint": "保存在 ~/.photo-cull，仅本人可读",
-   "alts": "连拍备选也细评",
+   "alts": "连拍里其余的帧也细评",
    "alts_hint": "更全面，但费用更高",
    "lang_hint": "AI 评语使用界面语言（右上角可切换）。"
   },
@@ -98,7 +99,7 @@
   "org": {
    "title": "整理输出",
    "enable": "评分后整理到输出文件夹",
-   "enable_hint": "也可以先不勾，在报告里复核完再点「按当前星级整理」",
+   "enable_hint": "也可以先不勾，在报告里复核完再点「按当前分数整理」",
    "dir": "输出文件夹",
    "dir_ph": "留空＝照片文件夹/整理输出",
    "default_dir": "整理输出",
@@ -110,15 +111,23 @@
    "by_result": "分成 保留／淘汰 两个文件夹",
    "by_result_hint": "淘汰＝拒绝（X）的照片，其余都算保留",
    "by_format": "每个里面再分 JPEG／RAW",
-   "rename": "重命名为 星级_机型_原文件名",
+   "rename": "重命名为 分数_机型_原文件名",
    "rename_hint": "只改输出文件夹里的，原文件名不变",
-   "kept": "保留",
-   "rejected": "淘汰",
-   "example": "例：{a}\n　　{b}",
+   "example": "例：{a}\n　　{m}\n　　{b}",
    "verb_copy": "复制",
    "verb_move": "移动",
    "move_confirm": "移动模式会把照片从原文件夹搬到输出文件夹。确定继续吗？",
-   "failed": "整理失败："
+   "failed": "整理失败：",
+   "by_category": "保留里再分 精选／连拍瞬间／可用",
+   "by_category_hint": "连拍瞬间里每组一个文件夹，放这组挑出的那一张",
+   "folder": {
+    "keep": "保留",
+    "reject": "淘汰",
+    "pick": "精选",
+    "moment": "连拍瞬间",
+    "usable": "可用",
+    "group": "连拍{n}_{time}"
+   }
   },
   "adv": {
    "title": "高级参数",
@@ -130,18 +139,27 @@
    "clip_high": "高光溢出提示",
    "clip_low": "暗部死黑提示",
    "workers": "并行数",
-   "hint": "清晰照片被误判模糊 → 调高两个模糊阈值；同一场景没分到一组 → 调大「同场景间隔」或调小「同场景相似度」。"
+   "hint": "清晰照片被误判模糊 → 调高两个模糊阈值；同一场景没分到一组 → 调大「同场景间隔」或调小「同场景相似度」。",
+   "pick_ai": "精选线（AI 细评）",
+   "pick_local": "精选线（仅本地）",
+   "weights": "精彩帧权重（挑连拍瞬间）",
+   "w_sharp": "主体清晰",
+   "w_eyes": "睁眼",
+   "w_smile": "笑容",
+   "w_exposure": "曝光",
+   "w_subject": "主体突出",
+   "weights_hint": "同一组连拍里按这几项加权挑出一张。默认 0.35／0.25／0.10／0.15／0.15，不用加起来等于 1。组里每张都有 AI 分时，AI 分占 60%。"
   },
   "run": "开始筛选",
   "empty": {
    "title": "选一个文件夹，开始筛选",
    "body": "支持 Leica／松下 DNG、Sony ARW、富士 RAF 等 RAW，以及 JPG／HEIC／PNG。同名 RAW＋JPEG 自动配对。画面数据不会被改动。",
    "s1": "1 · 本地分析",
-   "s1_body": "对焦、曝光、人脸与闭眼、连拍分组，不花钱",
+   "s1_body": "对焦、曝光、人脸与闭眼、连拍分组，按精彩帧权重挑连拍瞬间；最高 6 分，不花钱",
    "s2": "2 · AI 细评",
-   "s2_body": "可选 Claude／ChatGPT／Grok／Gemini／DeepSeek 或自定义接口，只评入围照片，调用前先确认用量",
+   "s2_body": "可选 Claude／ChatGPT／Grok／Gemini／DeepSeek 或自定义接口，给出 6–10 分；调用前先确认用量",
    "s3": "3 · 复核与整理",
-   "s3_body": "在报告里改星级、删除废片，RAW 和 JPEG 同步；可按星级分文件夹、重命名"
+   "s3_body": "在报告里改分数、删除废片，RAW 和 JPEG 同步；可分成 精选／连拍瞬间／可用／淘汰，并按分数重命名"
   },
   "stage": {
    "analyze": "本地分析",
@@ -157,20 +175,20 @@
    "open_report": "在浏览器中打开报告",
    "reveal_report": "在{fm}中显示报告",
    "open_photos": "打开照片文件夹",
-   "org_now": "按当前星级整理",
+   "org_now": "按当前分数整理",
    "open_org": "打开整理输出",
    "report_title": "筛选报告",
-   "note_dry": "演练模式：未批量写入星级。报告里手动改的星级会立即写入。",
+   "note_dry": "演练模式：未批量写入星级。报告里手动改的分数会立即写入（折算成星级）。",
    "note_xmp": "已为 {n} 张照片同步写入星级。Lightroom 请执行「元数据 → 从文件读取元数据」。",
    "note_none": "未批量写入星级。",
    "org_dry": "演练：本应{verb} {n} 张到 {out}。",
-   "org_ok": "已{verb}整理 {n} 张（保留 {kept}，淘汰 {rejected}）到 {out}。",
+   "org_ok": "已{verb}整理 {n} 张（精选 {pick}，连拍瞬间 {moment}，可用 {usable}，淘汰 {rejected}）到 {out}。",
    "org_err": "{n} 个文件失败，详见日志。"
   },
   "log": "运行日志",
   "confirm": {
    "title": "确认调用 AI 细评",
-   "line": "将对 {n} 张入围照片调用 {model}。",
+   "line": "将对 {n} 张照片调用 {model}。",
    "tokens": "预计约 {inp} 输入 token ＋ {out} 输出 token（粗估）。",
    "cache_hint": "已评过的照片会命中缓存，不会重复收费。实际费用以服务商账单为准。",
    "skip": "跳过细评",
@@ -188,7 +206,6 @@
    "need_pkg": "使用 {name} 需要：pip install {pkg}",
    "no_key": "未设置 {env}（{name} 的 API Key）。见 README。",
    "ai_no_json": "模型未返回 JSON",
-   "ai_bad_stars": "stars 超出范围",
    "gemini_empty": "Gemini 未返回结果：{reason}",
    "ai_all_cached": "AI 细评：{n} 张全部命中缓存，不产生费用。",
    "ai_jobs": "AI 细评：{n} 张需要调用 {label}（另有 {cached} 张命中缓存）。",
@@ -204,18 +221,19 @@
    "no_photos": "文件夹里没有支持的照片。",
    "start": "共 {n} 张照片（{files} 个文件，其中 {pairs} 组 RAW＋JPEG 配对），开始本地分析…",
    "analyzed": "本地分析完成，用时 {s} 秒。",
-   "kept_manual": "保留了上次手动调整的 {n} 张照片的星级。",
+   "kept_manual": "保留了上次手动调整的 {n} 张照片的分数。",
    "trash_ask": "将把 {n} 张淘汰照片（含配对文件）移到废纸篓，输入 y 确认：",
-   "org_kept_state": "输出文件夹 {out} 保持上次整理时的状态；需要按新星级重新整理时，勾选「整理输出」或在报告页点「按当前星级整理」。",
+   "org_kept_state": "输出文件夹 {out} 保持上次整理时的状态；需要按新分数重新整理时，勾选「整理输出」或在报告页点「按当前分数整理」。",
    "org_dry": "演练模式：本应把 {n} 张照片（{files} 个文件）{verb}到 {out}，实际未执行。",
-   "org_done": "已{verb} {n} 张照片（{files} 个文件）到 {out}：保留 {kept}，淘汰 {rejected}。",
-   "result": "结果：入围 {candidate}，连拍备选 {alt}，淘汰 {reject}，读取失败 {error}；4★以上 {top} 张；RAW＋JPEG 配对 {pairs} 组。",
+   "org_done": "已{verb} {n} 张照片（{files} 个文件）到 {out}：精选 {pick}，连拍瞬间 {moment}，可用 {usable}，淘汰 {rejected}。",
+   "result": "结果：精选 {pick}，连拍瞬间 {moment}，可用 {usable}，淘汰 {reject}，读取失败 {error}；连拍 {bursts} 组；RAW＋JPEG 配对 {pairs} 组。",
    "no_xmp": "未写星级（--no-xmp）。",
    "dry_xmp": "演练模式：本应为 {n} 张照片写入星级，实际未写。",
    "xmp_done": "已为 {n} 张照片同步写入星级（RAW→XMP 边车）。",
    "xmp_done_embed": "已为 {n} 张照片同步写入星级（RAW→XMP 边车，JPEG→内嵌 XMP）。",
    "trashed": "已把 {n} 个文件移到废纸篓。",
-   "report": "报告：{path}"
+   "report": "报告：{path}",
+   "ai_bad_score": "overall 不在 1–10 之间"
   },
   "parse": {
    "not_tiff": "不是 TIFF 结构的 RAW",
@@ -247,7 +265,6 @@
   },
   "cancelled": "已取消。已完成的细评结果保存在缓存里，下次不会重复收费。",
   "no_result": "还没有筛选结果",
-  "bad_stars": "星级必须是 -1（拒绝）到 5",
   "photo_not_found": "找不到这张照片",
   "trash_fallback": "照片文件夹里的 {dir}",
   "no_prev": "这个文件夹还没有筛选结果，请先运行一次",
@@ -270,7 +287,8 @@
   "started": "{name} 已启动：",
   "close_hint": "关闭这个终端窗口即可退出。",
   "already_running": "照片工具已经在运行，打开现有窗口：",
-  "app_quit": "关闭窗口即可退出。"
+  "app_quit": "关闭窗口即可退出。",
+  "bad_score": "分数必须是 -1（淘汰）到 10"
  },
  "flag": {
   "blur": "失焦或模糊",
@@ -282,9 +300,10 @@
   "eyes": "可能闭眼／侧脸",
   "xmp_fail": "星级未写入：{msg}"
  },
- "tier": {
-  "candidate": "入围",
-  "alt": "连拍备选",
+ "cat": {
+  "pick": "精选",
+  "moment": "连拍瞬间",
+  "usable": "可用",
   "reject": "淘汰",
   "error": "读取失败"
  },
@@ -299,13 +318,14 @@
  "report": {
   "title": "照片筛选报告",
   "meta": "来源：{src} · 生成：{when} · photo-cull {ver}",
-  "mode_edit": "可直接改星级、勾选删除；改动会同步写入配对的 RAW 和 JPEG",
-  "mode_static": "星级／色标已写入 XMP，可在 Lightroom／Capture One 中复核",
+  "mode_edit": "可直接打分（1–10）、勾选删除；改动会折算成星级同步写入配对的 RAW 和 JPEG",
+  "mode_static": "分数已折算成星级（分数÷2，向下取整）写入 XMP，可在 Lightroom／Capture One 中复核",
   "f": {
    "all": "全部",
-   "g4": "4★以上",
    "pair": "配对",
-   "face": "有人脸"
+   "face": "有人脸",
+   "g8": "8 分以上",
+   "burst": "连拍"
   },
   "sort": {
    "score": "按评分",
@@ -316,15 +336,14 @@
   "del_sel": "删除所选（{n}）",
   "del_rejects": "删除全部淘汰（{n}）",
   "reject": "拒绝",
-  "reject_mark": "✕ 拒绝",
-  "star_n": "{n} 星",
+  "reject_mark": "✕ 淘汰",
   "pick_tip": "选择以删除",
   "edit": "编辑",
   "edit_tip": "在照片编辑程序中打开（新标签页）",
   "local": "本地 {n}",
   "manual": "已手动调整",
   "burst": "连拍组 {g}（{n} 张{best}）",
-  "burst_best": "，组内最佳",
+  "burst_best": "，选为连拍瞬间",
   "issues": "改进：{list}",
   "toast_written": "已同步写入：{files}",
   "toast_nochange": "无变化",
@@ -339,7 +358,7 @@
    "file": "文件",
    "pair": "配对文件",
    "result": "结果",
-   "stars": "星级",
+   "stars": "XMP 星级",
    "label": "色标",
    "local": "本地分",
    "ai": "AI",
@@ -350,9 +369,13 @@
    "issues": "问题",
    "comment": "AI评语",
    "deleted": "已删除",
-   "yes": "是"
+   "yes": "是",
+   "score": "分数",
+   "highlight": "精彩帧得分"
   },
-  "list_sep": "、"
+  "list_sep": "、",
+  "score": "{n} 分",
+  "score_n": "{n} 分（XMP {stars}★）"
  },
  "edit": {
   "title": "照片编辑",

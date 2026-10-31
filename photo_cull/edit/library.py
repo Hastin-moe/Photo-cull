@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..cull.pipeline import collect
+from ..imaging.files import collect
 from ..i18n import t
 from ..imaging.exif import exposure_text, read_exif
 from ..imaging.formats import RAW_EXT

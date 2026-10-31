@@ -14,41 +14,70 @@ from ..i18n import t
 from ..version import VERSION
 from .ai.prompts import GENRE_LEGACY
 from .flags import flag_code, flag_text
-from .model import PHOTO_FIELDS, Photo
+from .model import CATEGORIES, SCHEMA, Photo, photos_from_json, shown
+from .scoring import counts
 
 # ───────────────────────── 报告与结果文件 ─────────────────────────
 
-REPORT_PREFIXES = ("common", "report", "flag", "genre", "tier")
+REPORT_PREFIXES = ("common", "report", "flag", "genre", "cat")
 
 
-def tier_text(tier: str, lang: str | None = None) -> str:
-    return t("tier." + tier, lang) if tier in ("candidate", "alt", "reject", "error") else tier
+def category_text(cat: str, lang: str | None = None) -> str:
+    return t("cat." + cat, lang) if cat in CATEGORIES else cat
 
 
 def load_results(out: Path) -> tuple[list[Photo], dict]:
-    rows = json.loads((out / "results.json").read_text(encoding="utf-8"))
-    photos = [Photo(**{k: v for k, v in r.items() if k in PHOTO_FIELDS}) for r in rows]
-    for p in photos:                       # 旧版本保存的中文问题标记／题材 → 代码
+    """读 results.json 和 meta.json。旧格式（1.7.1 及以前）自动转换，问题标记／题材的中文写法也转成代码。"""
+    photos, schema = photos_from_json(json.loads((out / "results.json").read_text(encoding="utf-8")))
+    for p in photos:
         p.flags = [flag_code(f) for f in p.flags]
         if p.ai and p.ai.get("genre") in GENRE_LEGACY:
             p.ai["genre"] = GENRE_LEGACY[p.ai["genre"]]
     meta_path = out / "meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    if schema < SCHEMA:
+        meta["upgraded_from"] = schema
     return photos, meta
 
 
 def summarize(photos: list[Photo], out: Path, meta: dict) -> dict:
     live = [p for p in photos if not p.trashed]
-    c = {}
-    for p in live:
-        c[p.tier] = c.get(p.tier, 0) + 1
+    c = counts(photos)
     return {"out": str(out), "report": str(out / "report.html"), "total": len(live),
-            "candidate": c.get("candidate", 0), "alt": c.get("alt", 0), "reject": c.get("reject", 0),
-            "error": c.get("error", 0), "top": sum(1 for p in live if p.stars >= 4),
+            "pick": c["pick"], "moment": c["moment"], "usable": c["usable"], "reject": c["reject"], "error": c["error"],
+            "kept": c["pick"] + c["moment"] + c["usable"],
+            "bursts": len({p.group for p in live if p.group_size > 1 and p.category != "error"}),
             "pairs": sum(1 for p in live if len(p.members) > 1),
             "trashed": sum(1 for p in photos if p.trashed),
             "xmp": meta.get("xmp", 0), "dry_run": meta.get("dry_run", False),
             "organized": {k: v for k, v in (meta.get("organized") or {}).items() if k != "plan"} or None}
+
+
+def write_results(photos: list[Photo], out: Path, meta: dict):
+    """results.json（schema 2）和 meta.json：先写临时文件再替换，写到一半断电也不会坏。"""
+    data = {"schema": SCHEMA, "version": VERSION, "photos": [asdict(p) for p in photos]}
+    for name, obj in (("results.json", data), ("meta.json", {k: v for k, v in meta.items() if k != "upgraded_from"})):
+        tmp = out / (name + ".tmp")
+        tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(out / name)
+    return data["photos"]
+
+
+def write_csv(photos: list[Photo], out: Path, lang: str):
+    sep = t("cull.msg.list_sep", lang)
+    with open(out / "results.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow([t("report.csv." + k, lang) for k in ("file", "pair", "result", "score", "stars", "label", "local",
+                                                       "ai", "ai_score", "highlight", "blur", "faces", "burst",
+                                                       "issues", "comment", "deleted")])
+        for p in photos:
+            a = p.ai or {}
+            w.writerow([p.name, " + ".join(Path(m).name for m in p.members), category_text(p.category, lang),
+                        shown(p.score) if p.category != "error" else "", p.stars, p.label, shown(p.local_score),
+                        a.get("provider", ""), shown(a["overall"]) if a.get("overall") else "",
+                        round(p.highlight, 2), p.blur, p.faces, f"{p.group}/{p.group_size}",
+                        sep.join(flag_text(x, lang) for x in p.flags), a.get("comment", ""),
+                        t("report.csv.yes", lang) if p.trashed else ""])
 
 
 def write_report(photos: list[Photo], out: Path, meta: dict, lang: str | None = None):
@@ -56,22 +85,8 @@ def write_report(photos: list[Photo], out: Path, meta: dict, lang: str | None = 
     报告页由 web/report/ 的模板生成：样式、脚本和当前语言的语言包都内联进去，
     所以 report.html 单独拷走（或直接双击打开）也能看。"""
     lang = lang or i18n.current()
-    rows = [asdict(p) for p in photos]
-    tmp = out / "results.json.tmp"
-    tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(out / "results.json")
-    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-    sep = t("cull.msg.list_sep", lang)
-    with open(out / "results.csv", "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow([t("report.csv." + k, lang) for k in ("file", "pair", "result", "stars", "label", "local", "ai",
-                                                       "ai_score", "blur", "faces", "burst", "issues", "comment", "deleted")])
-        for p in photos:
-            a = p.ai or {}
-            w.writerow([p.name, " + ".join(Path(m).name for m in p.members), tier_text(p.tier, lang),
-                        p.stars, p.label, p.local_score, a.get("provider", ""), a.get("overall", ""), p.blur,
-                        p.faces, f"{p.group}/{p.group_size}", sep.join(flag_text(x, lang) for x in p.flags),
-                        a.get("comment", ""), t("report.csv.yes", lang) if p.trashed else ""])
+    rows = write_results(photos, out, meta)
+    write_csv(photos, out, lang)
     web = WEB
     page = (web / "report" / "report.html").read_text(encoding="utf-8")
     css = (web / "common" / "tokens.css").read_text(encoding="utf-8") + "\n" + (web / "report" / "report.css").read_text(encoding="utf-8")

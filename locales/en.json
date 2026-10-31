@@ -17,12 +17,13 @@
   "stat": {
    "total": "Total",
    "pairs": "RAW+JPEG pairs",
-   "top": "4★ and up",
-   "candidate": "Shortlisted",
-   "alt": "Burst alternates",
    "reject": "Rejected",
    "error": "Unreadable",
-   "trashed": "Deleted"
+   "trashed": "Deleted",
+   "bursts": "Bursts",
+   "pick": "Picks",
+   "moment": "Burst moments",
+   "usable": "Usable"
   },
   "app": {
    "cull": "Photo Cull",
@@ -53,8 +54,8 @@
    "title": "Mode",
    "local": "Local only",
    "ai": "Local + AI review",
-   "ai_hint": "Local analysis first removes failed shots and burst duplicates; only shortlisted photos are sent, downsized, to the chosen model to judge composition, light and moment.",
-   "local_hint": "Technical checks only. Runs entirely on this computer: no network, no cost."
+   "ai_hint": "Local analysis first removes failed shots and picks the best frame of each burst; only those photos are sent, downsized, to the chosen model to judge composition, light and moment. Scores above 6 come only from AI.",
+   "local_hint": "Technical checks only. Runs entirely on this computer: no network, no cost. Local scores go up to 6."
   },
   "ai": {
    "provider": "AI provider",
@@ -71,7 +72,7 @@
    "key_custom": "Enter the provider’s API key (or set the {env} environment variable).",
    "remember": "Remember on this computer",
    "remember_hint": "Saved in ~/.photo-cull, readable only by you",
-   "alts": "Also review burst alternates",
+   "alts": "Also review the other burst frames",
    "alts_hint": "More thorough, but costs more",
    "lang_hint": "AI comments are written in the interface language (switch it at the top right)."
   },
@@ -98,7 +99,7 @@
   "org": {
    "title": "Organize output",
    "enable": "Organize into an output folder after rating",
-   "enable_hint": "You can also leave this off and click “Organize by current ratings” after reviewing the report",
+   "enable_hint": "You can also leave this off and click “Organize by current scores” after reviewing the report",
    "dir": "Output folder",
    "dir_ph": "Empty = photo folder/Organized",
    "default_dir": "Organized",
@@ -110,15 +111,23 @@
    "by_result": "Split into Keep / Rejected folders",
    "by_result_hint": "Rejected = photos marked reject (X); everything else is kept",
    "by_format": "Then split each into JPEG / RAW",
-   "rename": "Rename to rating_camera_original-name",
+   "rename": "Rename to score_camera_original-name",
    "rename_hint": "Only files in the output folder are renamed; originals keep their names",
-   "kept": "Keep",
-   "rejected": "Rejected",
-   "example": "e.g. {a}\n     {b}",
+   "example": "e.g. {a}\n     {m}\n     {b}",
    "verb_copy": "copied",
    "verb_move": "moved",
    "move_confirm": "Move mode takes the photos out of the original folder and puts them in the output folder. Continue?",
-   "failed": "Organizing failed:"
+   "failed": "Organizing failed:",
+   "by_category": "Split Kept into Picks / Burst moments / Usable",
+   "by_category_hint": "Burst moments get one folder per burst, holding the frame chosen from it",
+   "folder": {
+    "keep": "Kept",
+    "reject": "Rejected",
+    "pick": "Picks",
+    "moment": "Burst moments",
+    "usable": "Usable",
+    "group": "Burst{n}_{time}"
+   }
   },
   "adv": {
    "title": "Advanced",
@@ -130,18 +139,27 @@
    "clip_high": "Highlight clipping warning",
    "clip_low": "Shadow clipping warning",
    "workers": "Parallel workers",
-   "hint": "Sharp photos flagged as blurry → raise both blur thresholds. Shots of one scene not grouped → increase “Scene gap” or lower “Scene similarity”."
+   "hint": "Sharp photos flagged as blurry → raise both blur thresholds. Shots of one scene not grouped → increase “Scene gap” or lower “Scene similarity”.",
+   "pick_ai": "Pick line (AI reviewed)",
+   "pick_local": "Pick line (local only)",
+   "weights": "Highlight weights (choosing burst moments)",
+   "w_sharp": "Subject sharpness",
+   "w_eyes": "Eyes open",
+   "w_smile": "Smile",
+   "w_exposure": "Exposure",
+   "w_subject": "Subject prominence",
+   "weights_hint": "Within each burst, one frame is chosen by these weighted factors. Defaults 0.35 / 0.25 / 0.10 / 0.15 / 0.15; they don't need to add up to 1. When every frame in the burst has an AI score, the AI score counts 60%."
   },
   "run": "Start",
   "empty": {
    "title": "Choose a folder to start culling",
    "body": "Supports RAW such as Leica/Panasonic DNG, Sony ARW and Fujifilm RAF, plus JPG/HEIC/PNG. Same-name RAW+JPEG are paired automatically. Image data is never altered.",
    "s1": "1 · Local analysis",
-   "s1_body": "Focus, exposure, faces and closed eyes, burst grouping. Free",
+   "s1_body": "Focus, exposure, faces and closed eyes, burst grouping; the best frame of each burst is chosen by highlight weights. Up to 6 points, free",
    "s2": "2 · AI review",
-   "s2_body": "Optional: Claude / ChatGPT / Grok / Gemini / DeepSeek or a custom endpoint. Only shortlisted photos, with a usage estimate before any call",
+   "s2_body": "Optional: Claude / ChatGPT / Grok / Gemini / DeepSeek or a custom endpoint gives 6–10 points, with a usage estimate before any call",
    "s3": "3 · Review and organize",
-   "s3_body": "Change ratings and delete rejects in the report, RAW and JPEG together; sort into folders by rating and rename"
+   "s3_body": "Change scores and delete failed shots in the report, RAW and JPEG in sync; sort into Picks / Burst moments / Usable / Rejected and rename by score"
   },
   "stage": {
    "analyze": "Local analysis",
@@ -157,20 +175,20 @@
    "open_report": "Open report in browser",
    "reveal_report": "Show report in {fm}",
    "open_photos": "Open photo folder",
-   "org_now": "Organize by current ratings",
+   "org_now": "Organize by current scores",
    "open_org": "Open organized folder",
    "report_title": "Cull report",
-   "note_dry": "Dry run: ratings were not written in bulk. Ratings you change in the report are written immediately.",
+   "note_dry": "Dry run: ratings were not written in bulk. Scores you change in the report are written right away (converted to stars).",
    "note_xmp": "Ratings written for {n} photos. In Lightroom, run Metadata → Read Metadata from Files.",
    "note_none": "Ratings were not written in bulk.",
    "org_dry": "Dry run: would have {verb} {n} photos to {out}.",
-   "org_ok": "{verb} {n} photos ({kept} kept, {rejected} rejected) to {out}.",
+   "org_ok": "{verb} {n} photos ({pick} picks, {moment} burst moments, {usable} usable, {rejected} rejected) to {out}.",
    "org_err": "{n} files failed; see the log."
   },
   "log": "Log",
   "confirm": {
    "title": "Confirm AI review",
-   "line": "{n} shortlisted photos will be sent to {model}.",
+   "line": "{n} photos will be sent to {model}.",
    "tokens": "Roughly {inp} input tokens + {out} output tokens (estimate).",
    "cache_hint": "Photos reviewed before come from the cache and are not charged again. Your provider’s bill is authoritative.",
    "skip": "Skip review",
@@ -188,7 +206,6 @@
    "need_pkg": "{name} requires: pip install {pkg}",
    "no_key": "{env} ({name} API key) is not set. See the README.",
    "ai_no_json": "The model did not return JSON",
-   "ai_bad_stars": "stars is out of range",
    "gemini_empty": "Gemini returned no result: {reason}",
    "ai_all_cached": "AI review: all {n} photos found in the cache, no cost.",
    "ai_jobs": "AI review: {n} photos will be sent to {label} ({cached} more found in the cache).",
@@ -204,18 +221,19 @@
    "no_photos": "No supported photos in this folder.",
    "start": "{n} photos ({files} files, {pairs} RAW+JPEG pairs). Starting local analysis…",
    "analyzed": "Local analysis finished in {s} s.",
-   "kept_manual": "Kept the manually adjusted ratings of {n} photos from last time.",
+   "kept_manual": "Kept the scores you set by hand last time for {n} photos.",
    "trash_ask": "Move {n} rejected photos (with paired files) to the Trash? Type y to confirm: ",
-   "org_kept_state": "The output folder {out} stays as it was last organized. To reorganize by the new ratings, turn on “Organize output” or click “Organize by current ratings” on the report page.",
+   "org_kept_state": "The output folder {out} stays as it was after the last organize. To reorganize by the new scores, turn on “Organize output” or click “Organize by current scores” in the report.",
    "org_dry": "Dry run: would have {verb} {n} photos ({files} files) to {out}; nothing was changed.",
-   "org_done": "{verb} {n} photos ({files} files) to {out}: {kept} kept, {rejected} rejected.",
-   "result": "Result: {candidate} shortlisted, {alt} burst alternates, {reject} rejected, {error} unreadable; {top} rated 4★ or higher; {pairs} RAW+JPEG pairs.",
+   "org_done": "{verb} {n} photos ({files} files) to {out}: {pick} picks, {moment} burst moments, {usable} usable, {rejected} rejected.",
+   "result": "Result: {pick} picks, {moment} burst moments, {usable} usable, {reject} rejected, {error} unreadable; {bursts} bursts; {pairs} RAW+JPEG pairs.",
    "no_xmp": "Ratings not written (--no-xmp).",
    "dry_xmp": "Dry run: would have written ratings for {n} photos; nothing was written.",
    "xmp_done": "Ratings written for {n} photos (RAW → XMP sidecar).",
    "xmp_done_embed": "Ratings written for {n} photos (RAW → XMP sidecar, JPEG → embedded XMP).",
    "trashed": "Moved {n} files to the Trash.",
-   "report": "Report: {path}"
+   "report": "Report: {path}",
+   "ai_bad_score": "overall is not between 1 and 10"
   },
   "parse": {
    "not_tiff": "Not a TIFF-based RAW",
@@ -247,7 +265,6 @@
   },
   "cancelled": "Cancelled. Finished AI reviews are cached and won’t be charged again.",
   "no_result": "There are no cull results yet",
-  "bad_stars": "Rating must be between -1 (reject) and 5",
   "photo_not_found": "Photo not found",
   "trash_fallback": "{dir} in the photo folder",
   "no_prev": "This folder has no results yet. Run a cull first",
@@ -270,7 +287,8 @@
   "started": "{name} is running:",
   "close_hint": "Close this terminal window to quit.",
   "already_running": "Photo Tools is already running; opening it:",
-  "app_quit": "Close the window to quit."
+  "app_quit": "Close the window to quit.",
+  "bad_score": "The score must be from -1 (reject) to 10"
  },
  "flag": {
   "blur": "Out of focus or blurry",
@@ -282,9 +300,10 @@
   "eyes": "Eyes may be closed / face turned",
   "xmp_fail": "Rating not written: {msg}"
  },
- "tier": {
-  "candidate": "Shortlisted",
-  "alt": "Burst alternate",
+ "cat": {
+  "pick": "Pick",
+  "moment": "Burst moment",
+  "usable": "Usable",
   "reject": "Rejected",
   "error": "Unreadable"
  },
@@ -299,13 +318,14 @@
  "report": {
   "title": "Photo Cull Report",
   "meta": "Source: {src} · Generated: {when} · photo-cull {ver}",
-  "mode_edit": "Change ratings or select photos to delete here; changes are written to both the RAW and the JPEG of each pair",
-  "mode_static": "Ratings and labels are in the XMP; review them in Lightroom / Capture One",
+  "mode_edit": "Score photos (1–10) and select them to delete; changes are converted to stars and written to the paired RAW and JPEG",
+  "mode_static": "Scores are converted to stars (score ÷ 2, rounded down) and written to the XMP; review them in Lightroom / Capture One",
   "f": {
    "all": "All",
-   "g4": "4★+",
    "pair": "Pairs",
-   "face": "With faces"
+   "face": "With faces",
+   "g8": "8 or higher",
+   "burst": "Bursts"
   },
   "sort": {
    "score": "By score",
@@ -317,14 +337,13 @@
   "del_rejects": "Delete all rejects ({n})",
   "reject": "Reject",
   "reject_mark": "✕ Rejected",
-  "star_n": "{n} stars",
   "pick_tip": "Select to delete",
   "edit": "Edit",
   "edit_tip": "Open in Photo Edit (new tab)",
   "local": "Local {n}",
   "manual": "adjusted by hand",
   "burst": "Burst group {g} ({n} photos{best})",
-  "burst_best": ", best in group",
+  "burst_best": ", chosen as the burst moment",
   "issues": "To improve: {list}",
   "toast_written": "Written to: {files}",
   "toast_nochange": "no changes",
@@ -339,7 +358,7 @@
    "file": "File",
    "pair": "Paired files",
    "result": "Result",
-   "stars": "Rating",
+   "stars": "XMP stars",
    "label": "Label",
    "local": "Local score",
    "ai": "AI",
@@ -350,9 +369,13 @@
    "issues": "Issues",
    "comment": "AI comment",
    "deleted": "Deleted",
-   "yes": "yes"
+   "yes": "yes",
+   "score": "Score",
+   "highlight": "Highlight score"
   },
-  "list_sep": ", "
+  "list_sep": ", ",
+  "score": "{n} pts",
+  "score_n": "{n} points (XMP {stars}★)"
  },
  "edit": {
   "title": "Photo Edit",

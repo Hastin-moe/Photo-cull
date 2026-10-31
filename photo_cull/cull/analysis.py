@@ -141,17 +141,20 @@ def analyze(img: Image.Image, p: Photo) -> Image.Image:
         det = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     m = max(24, int(min(det.shape) * 0.06))
     face_model, eye_model = _cascade("haarcascade_frontalface_default.xml"), _cascade("haarcascade_eye.xml")
+    smile_model = _cascade("haarcascade_smile.xml")
     if face_model is None:
         return focus
     faces = face_model.detectMultiScale(
         cv2.equalizeHist(det), scaleFactor=1.1, minNeighbors=6, minSize=(m, m))
     p.faces = len(faces)
     face_sharp = []
+    area = float(gray.shape[0] * gray.shape[1]) or 1.0
     for (x, y, w, h) in faces:
         X, Y, W, H = (int(v / scale) for v in (x, y, w, h))
         roi = gray[Y:Y + H, X:X + W]
         if roi.size == 0:
             continue
+        p.face_area = max(p.face_area, round(W * H / area, 4))
         face_sharp.append(lap_var(roi))
         upper = roi[: H * 6 // 10]
         if W >= 90 and eye_model is not None:   # 脸太小时眼睛检测不可靠，不判断
@@ -159,6 +162,11 @@ def analyze(img: Image.Image, p: Photo) -> Image.Image:
                 upper, scaleFactor=1.1, minNeighbors=5, minSize=(max(8, W // 10), max(8, W // 10)))
             if len(eyes) == 0:
                 p.eyes_missing += 1
+        if W >= 90 and smile_model is not None:  # 笑容：脸的下半部分；minNeighbors 取大一些，宁可漏也不乱报
+            lower = roi[H // 2:]
+            sm = smile_model.detectMultiScale(lower, scaleFactor=1.7, minNeighbors=22, minSize=(max(12, W // 4), max(8, H // 8)))
+            if len(sm):
+                p.smiles += 1
     if face_sharp:
         p.sharp_face = float(max(face_sharp))
     return focus

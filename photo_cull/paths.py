@@ -25,3 +25,5 @@ LOG_DIR = CONFIG_DIR / "logs"
 WEBVIEW_DIR = CONFIG_DIR / "webview"
 
 REPORT_DIR = "photo-cull-report"                      # 照片文件夹里的结果文件夹名
+TRASH_DIR = "_待删除"                                   # 没有 send2trash 时的退路文件夹（名字固定，不随界面语言变化）
+ORG_MANIFEST = ".photo-cull-organize.json"             # 整理输出的记录：上次整理到哪里

@@ -1,17 +1,17 @@
 # photo-cull
 
-[简体中文](README.md) · **English** · [日本語](README.ja.md)
+[简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md)
 
 photo-cull contains two programs that live in **one window** — switch between them at the top right (⌘1/⌘2) and both keep their state. On macOS it can be packaged as a standalone **照片工具.app** that needs no Terminal (see “Mac app” below):
 
-- **Photo Cull** (double-click `启动筛选.command` on macOS / `启动筛选.bat` on Windows): technical culling on your own computer — focus, blur, exposure, faces and closed eyes, plus grouping of bursts and repeated shots of the same scene. Shortlisted photos can then get an aesthetic review from **Claude, ChatGPT, Grok, Gemini, DeepSeek**, or any OpenAI-compatible vision model (Qwen, Kimi, OpenRouter, a local Ollama, …). **Ratings and color labels** are written to XMP, which Lightroom Classic and Capture One both read, and you get an interactive web report.
+- **Photo Cull** (double-click `启动筛选.command` on macOS / `启动筛选.bat` on Windows): technical culling on your own computer — focus, blur, exposure, faces and closed eyes, plus grouping of bursts and repeated shots of the same scene; the best frame of each burst is chosen by “highlight weights”. Those photos can then get an aesthetic review from **Claude, ChatGPT, Grok, Gemini, DeepSeek**, or any OpenAI-compatible vision model (Qwen, Kimi, OpenRouter, a local Ollama, …). Scores use a **10-point scale**: local technical scores go up to 6, and only AI review gives more than 6. Scores are converted to **star ratings and color labels** and written to XMP, which Lightroom Classic and Capture One both read, and you get an interactive web report.
 - **Photo Edit** (double-click `启动编辑.command` / `启动编辑.bat`; basic): global adjustments with curves, a histogram and waveform scopes; apply `.cube` LUTs and Lightroom/Photoshop XMP presets; export JPEG or 16-bit TIFF. Supports Leica DNG, Panasonic DNG, every Sony ARW and Fujifilm RAF.
 
 > The launcher files keep their Chinese names: `安装环境` = install environment, `启动筛选` = start Photo Cull, `启动编辑` = start Photo Edit.
 
-**Interface languages**: 简体中文, English and 日本語 — switch at the top right of either program (both stay in sync). The report, the run log and AI comments follow the chosen language. On first launch the language is picked from your browser.
+**Interface languages**: 简体中文, English, 日本語 and 한국어 — switch at the top right of either program (both stay in sync). The report, the run log and AI comments follow the chosen language. On first launch the language is picked from your browser.
 
-**RAW+JPEG pairing**: a RAW (DNG, ARW, RAF…) and a JPEG with the same name in the same folder are treated as one photo. Ratings are written to both; deleting removes both.
+**RAW+JPEG pairing**: a RAW (DNG, ARW, RAF…) and a JPEG with the same name in the same folder are treated as one photo. Scores are written to both; deleting removes both.
 
 **Safety**
 - Image data is never modified.
@@ -86,9 +86,9 @@ Photo Cull:
    Turn on “Organize output” to sort and rename after rating (see “Organizing output” below).
 4. Click “Start”. Before any AI call, a dialog shows how many photos will be sent and the estimated usage; nothing is sent until you confirm.
 5. The report appears in the window. In it you can:
-   - click ★ to change a rating or ✕ to reject — changes are written to the RAW and the JPEG immediately;
+   - click ★ to give 1–10 points (7–10 is the AI range, but you can set it by hand) or ✕ to reject; changes are converted to stars and written to the RAW and the JPEG immediately;
    - tick the box on a photo and click “Delete selected”, or “Delete all rejects”; paired files and their XMP go to the Trash together;
-   - click “Organize by current ratings” after reviewing to sort into the output folder using your edited ratings;
+   - click “Organize by current scores” after reviewing to sort into the output folder using your edited scores;
    - click “Edit” on a photo to switch to Photo Edit with that photo open.
 
 Everything runs locally on 127.0.0.1 and is not reachable from other computers. Close the terminal window to quit.
@@ -141,26 +141,57 @@ export ANTHROPIC_API_KEY="…"
 export PHOTO_CULL_CUSTOM_API_KEY="…"
 .venv/bin/python cull.py "photo folder" --ai --provider custom --model <model> --base-url https://openrouter.ai/api/v1
 
-# Report, log and AI comments in English (zh-CN / en / ja)
+# Report, log and AI comments in English (zh-CN / en / ja / ko)
 .venv/bin/python cull.py "photo folder" --lang en
 
 # After rating, move rejects (with paired files) to the Trash
 .venv/bin/python cull.py "photo folder" --trash-rejects
 
-# Organize: Keep/Rejected × JPEG/RAW folders, renamed (copies by default; add --move to move)
-.venv/bin/python cull.py "photo folder" --organize "output folder" --by-result --by-format --rename
+# Organize: Kept (Picks / Burst moments / Usable) / Rejected × JPEG/RAW, renamed by score (copies by default; add --move to move)
+.venv/bin/python cull.py "photo folder" --organize "output folder" --by-result --by-category --by-format --rename
+
+# Change the pick line and the highlight weights
+.venv/bin/python cull.py "photo folder" --ai --pick-ai 7.5 --weights sharp=0.5,eyes=0.3
 ```
 
-The report is written to `photo folder/photo-cull-report/report.html`, next to `results.csv` for Numbers or Excel. A report opened directly from disk is read-only; use the program to change ratings or delete.
+The report is written to `photo folder/photo-cull-report/report.html`, next to `results.csv` for Numbers or Excel. A report opened directly from disk is read-only; use the program to change scores or delete.
 
-## How results map to your software
+## Scoring (10-point scale)
 
-| Result | Rating | Label | Meaning |
-|---|---|---|---|
-| Pick | 4–5★ | Green | Only given by AI review; never appears without it |
-| Usable | 3★ | Yellow | Shortlisted but not outstanding |
-| Burst alternate | up to 2★ | none | Not the best frame of its burst or repeated shots |
-| Rejected | Reject (Rating −1) | Red | Badly out of focus, over- or underexposed; also red when the AI gives 1 star |
+- The **local technical score** goes up to **6**: focus (compared within the batch) 60%, exposure 30%, faces and open eyes 10%, mapped to 1.0–6.0. “Possibly soft” photos get at most 4; badly out of focus, over- or underexposed photos are rejected.
+- **AI review** gives an overall score from 1.0 to 10.0; **only AI gives more than 6**. For reviewed photos the AI score is used.
+- Scores are **kept to 0.1 internally**; the interface, report and file names show only the whole number.
+- In XMP the score is **converted to 1–5 stars: score ÷ 2, rounded down** (7.9 → 3★, 8.0 → 4★). Rejects are written as “reject” (Rating −1).
+
+| Score | XMP stars | Label |
+|---|---|---|
+| 10 | 5★ | Green |
+| 8–9.9 | 4★ | Green |
+| 6–7.9 | 3★ | Yellow |
+| 4–5.9 | 2★ | none |
+| 2–3.9 | 1★ | Red |
+| 0–1.9 | unrated | none |
+| Rejected | Reject (−1) | Red |
+
+**Categories**: every kept photo falls into one of three (rejects and unreadable files are counted separately):
+
+| Category | How |
+|---|---|
+| Pick | A single photo at or above the pick line: ≥ 7 when AI-reviewed, ≥ 5 with a local score only (both lines can be changed under “Advanced”, or with `--pick-ai` / `--pick-local`) |
+| Burst moment | The frame chosen from each burst (including repeated shots of a scene) by the highlight weights |
+| Usable | Every other kept photo, including the burst frames that were not chosen (at most 4.9, i.e. 2★) |
+
+**Highlight weights** (defaults; change them under “Advanced” or with `--weights`): within a burst, one frame is chosen by the weighted sum below. Each factor is compared within the burst; the weights don’t need to add up to 1.
+
+| Factor | Default | What it looks at |
+|---|---|---|
+| Subject sharpness | 0.35 | sharpest frame in the burst |
+| Eyes open | 0.25 | share of detected faces with eyes found |
+| Smile | 0.10 | share of detected faces that smile |
+| Exposure | 0.15 | brightness in range, no clipping |
+| Subject prominence | 0.15 | how much of the frame the largest face fills, compared with the other frames |
+
+When every frame of a burst has an AI score (“Also review the other burst frames”), the choice is made again with AI 60% + highlight score 40%.
 
 **Where ratings are written**
 
@@ -189,28 +220,39 @@ The report is written to `photo folder/photo-cull-report/report.html`, next to `
 
 After rating, photos can be organized into an output folder (`photo folder/Organized` if left empty). Each option can be turned on separately:
 
-- **Split into Keep / Rejected**: photos marked reject (X) go to “Rejected”, everything else to “Keep”. Folder names follow the interface language at the time you organize (中文 `保留`/`淘汰`, English `Keep`/`Rejected`, 日本語 `採用`/`不採用`); later updates from the report reuse the same names.
+- **Split into Kept / Rejected**: photos marked reject (X) go to “Rejected”, everything else to “Kept”.
+- **Split Kept into Picks / Burst moments / Usable**: Burst moments get **one folder per burst** (e.g. `Burst012_103045`: burst number + capture time of the chosen frame) holding the chosen frame.
 - **Then split into JPEG / RAW**: HEIC/PNG go with JPEG.
-- **Rename**: prefix the name with `rating_camera_`, camera from EXIF, e.g.
-  `4_ILCE-1M2_DSC01234.ARW`, `3_LEICA-M11-D_L1003467.DNG`, `X_X-T5_DSCF0001.RAF`.
-  Rejects get `X_`, unrated `0_`; spaces and special characters in the camera name become `-`.
+- **Rename**: prefix the name with `score_camera_` — a two-digit score, so sorting by name sorts by score; camera from EXIF, e.g.
+  `08_ILCE-1M2_DSC01234.ARW`, `06_LEICA-M11-D_L1003467.DNG`, `X_X-T5_DSCF0001.RAF`.
+  Rejects get `X_`; spaces and special characters in the camera name become `-`.
   **Only files in the output folder are renamed**; originals keep their names.
 
-With both levels on:
+Folder names follow the interface language at the time you organize (中文 `保留`/`精选`/`连拍瞬间`/`可用`/`淘汰`, English `Kept`/`Picks`/`Burst moments`/`Usable`/`Rejected`, and likewise for 日本語 and 한국어) and are saved with the organize record, so later updates from the report reuse the same names. When a photo changes category, folders left empty (such as a burst moment folder) are removed.
+
+With everything on:
 
 ```
 Organized/
-├── Keep/
-│   ├── JPEG/  4_ILCE-1M2_DSC01234.JPG
-│   └── RAW/   4_ILCE-1M2_DSC01234.ARW  4_ILCE-1M2_DSC01234.xmp
+├── Kept/
+│   ├── Picks/
+│   │   ├── JPEG/  08_ILCE-1M2_DSC01234.JPG
+│   │   └── RAW/   08_ILCE-1M2_DSC01234.ARW  08_ILCE-1M2_DSC01234.xmp
+│   ├── Burst moments/
+│   │   └── Burst012_103045/
+│   │       ├── JPEG/  07_ILCE-1M2_DSC01240.JPG
+│   │       └── RAW/   07_ILCE-1M2_DSC01240.ARW
+│   └── Usable/
+│       ├── JPEG/
+│       └── RAW/
 └── Rejected/
     ├── JPEG/
     └── RAW/
 ```
 
 **Copy or move**
-- **Copy** (default): the original folder stays as it is and the output holds copies (twice the space). Later rating changes in the report move the copy to the matching folder and name; deleting a photo also sends its copy to the Trash. Organizing again never makes a second copy.
-- **Move**: photos leave the original folder. Rating changes and deletions in the report then apply to the files in their new place. Photos already in Lightroom / Capture One will show as missing and need their folder relocated there.
+- **Copy** (default): the original folder stays as it is and the output holds copies (twice the space). Later score changes in the report move the copy to the matching folder and name; deleting a photo also sends its copy to the Trash. Organizing again never makes a second copy.
+- **Move**: photos leave the original folder. Score changes and deletions in the report then apply to the files in their new place. Photos already in Lightroom / Capture One will show as missing and need their folder relocated there.
 
 **Details**
 - Paired RAW and JPEG travel together; a RAW’s `.xmp` sidecar follows it and is renamed with it, so Lightroom / Capture One see the ratings when importing the output folder.
@@ -227,31 +269,33 @@ Organized/
 | `--dry-run` | Report only, no ratings written |
 | `--no-xmp` | Report only |
 | `--no-jpeg-embed` | Leave JPEG files alone; write RAW sidecars only |
-| `--ai` | AI review for shortlisted photos |
+| `--ai` | AI review for the chosen photos (singles and each burst moment); gives scores above 6 |
 | `--provider claude / openai / grok / gemini / deepseek / custom` | Which provider |
 | `--model` | Model name |
 | `--base-url` | Endpoint for `--provider custom` |
-| `--lang zh-CN / en / ja` | Language of the report, log and AI comments (default: the interface setting or system language) |
-| `--ai-alts` | Also review burst alternates (costs more) |
+| `--lang zh-CN / en / ja / ko` | Language of the report, log and AI comments (default: the interface setting or system language) |
+| `--ai-alts` | Also review the burst frames that were not chosen (costs more) |
 | `--trash-rejects` | Move rejects (with paired files) to the Trash |
 | `--organize [folder]` | Organize after rating; default `photo folder/Organized`; relative paths start at the photo folder |
-| `--by-result` / `--by-format` | Split into Keep/Rejected and JPEG/RAW folders |
-| `--rename` | Rename to `rating_camera_original` |
+| `--by-result` / `--by-category` / `--by-format` | Split into Kept/Rejected, Picks/Burst moments/Usable and JPEG/RAW folders |
+| `--rename` | Rename to `score_camera_original` |
 | `--move` | Move instead of copy |
 | `--yes` | Don’t ask before calling the API or deleting |
 | `--burst-gap 15` | Burst: shots at most this many seconds apart that look alike form a group |
 | `--scene-gap 60` | Same scene: shots at most this many seconds apart that look very alike also group (for slower shooting, e.g. rangefinders) |
 | `--similarity 0.6` | Scene similarity threshold, 0–1; higher is stricter |
 | `--blur-warn 0.58` / `--blur-reject 0.75` | Blur above the first is flagged “possibly soft”; above the second, rejected |
+| `--pick-ai 7` / `--pick-local 5` | Pick lines (10-point scale) for AI-reviewed / local-only photos |
+| `--weights sharp=0.35,eyes=0.25,…` | Highlight weights (`sharp`, `eyes`, `smile`, `exposure`, `subject`); omitted ones keep their defaults |
 
 ## Notes and limits
 
 - **Which file is analyzed**: with a paired JPEG, the JPEG (full size, in-camera colors); otherwise the RAW’s embedded preview. TIFF-based RAW (DNG, ARW) and Fujifilm RAF are read directly; formats like CR3 need rawpy.
 - **Pairing**: same folder, same name, different extension (case-insensitive), e.g. `L1003467.DNG` and `L1003467.JPG`. Files in different folders are not paired.
 - **Focus check**: uses a re-blur metric — blur the image again and measure how much the edges change — so it doesn’t depend on how much detail a scene has, and only the sharpest region counts, so portraits with blurred backgrounds aren’t misjudged. Default thresholds were calibrated on Leica M11-D files; other cameras may need tuning.
-- **Faces and closed eyes**: OpenCV’s classic detectors — fast but rough, so they only add a hint and never reject a photo.
+- **Faces, closed eyes and smiles**: OpenCV’s classic detectors — fast but rough, so they only add a hint and help choose burst moments; they never reject a photo.
 - **AI review**:
-  - only shortlisted photos are uploaded, downsized to 1024-pixel JPEGs;
+  - only the chosen photos (singles, and the frame chosen from each burst) are uploaded, downsized to 1024-pixel JPEGs;
   - results are cached in `ai_cache.json`;
   - models differ in taste: treat scores as suggestions and make the final call yourself.
 
@@ -303,7 +347,7 @@ Double-click `启动编辑.command`, or click “Edit” on a photo in the cull 
 - **Input space**: always treated as sRGB, matching the in-camera look of Sony “ST” / Leica “STD”.
   - JPEG: JPEGs shot in ST/STD match what the LUTs were designed for.
   - RAW: the editor’s standard rendering approximates that look before the LUT.
-- Camera Log conversion (S-Log3 and others) is disabled for now (kept in code: `ENABLE_LOG` in `editor.py`).
+- Camera Log conversion (S-Log3 and others) is disabled for now (kept in code: `ENABLE_LOG` in `photo_cull/edit/logspace.py`).
 - The editor can also decode Adobe color tables (RGBTable / LookTable) in XMP presets.
 
 **Export**
@@ -317,9 +361,21 @@ Double-click `启动编辑.command`, or click “Edit” on a photo in the cull 
 
 ## For developers
 
-The code separates front end and back end: Python (`cull.py`, `editor.py`, `gui.py`) handles photos and serves an API; the interface is HTML/CSS/JS in `web/`, and every piece of text lives in the `locales/` language packs. You can change the interface without touching Python, and the wording without touching code. See [docs/工作记录.md](docs/工作记录.md) (Chinese) for the structure and [docs/GUI设计方向.md](docs/GUI设计方向.md) (Chinese) for the design direction.
+The code separates front end and back end: the Python package `photo_cull/` handles photos and serves an API; the interface is HTML/CSS/JS in `web/`, and every piece of text lives in the `locales/` language packs. You can change the interface without touching Python, and the wording without touching code.
+
+```
+photo_cull/
+  imaging/   reading images and EXIF (embedded RAW previews, HEIF, Fujifilm RAF), shared by cull and edit
+  cull/      Photo Cull: analysis → grouping → scoring → ai/ review → xmp → organize → report; pipeline runs the stages, cli is the command line
+  edit/      Photo Edit: color, lut3d / refs / styles (LUTs), presets, render, auto, session, export
+  server/    local web server: settings, jobs, apps (registry of the two programs), pages, actions (report actions), handler (API), runtime (one window)
+  i18n.py · paths.py · version.py
+cull.py · gui.py · desktop.py      entry points (command line, local web UI, Mac app)
+tests/                              tests: python3 tests/run.py
+```
 
 - [Changelog](CHANGELOG.md) (Chinese)
+- [Work log](docs/工作记录.md) and [1.7.1 structure before the refactor](docs/架构-1.7.1原始结构.md) (Chinese)
 - [Contributing](CONTRIBUTING.en.md)
 
 ## License
