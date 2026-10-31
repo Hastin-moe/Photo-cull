@@ -41,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit(t("cull.msg.need_opencv"))
 
-VERSION = "1.7-beta"
+VERSION = "1.7.1"
 RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2", ".pef", ".3fr", ".iiq"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".heif", ".hif", ".webp"}
 JPEG_EXT = {".jpg", ".jpeg"}
@@ -552,7 +552,7 @@ def _cascade(name: str):
 
     CascadeClassifier 不是线程安全的：多个线程同时用同一个对象做 detectMultiScale，
     会在 OpenCV 内部（HaarEvaluator 的积分图缓冲区）互相踩内存，整个程序直接段错误闪退
-    （1.7-beta 大批量测试时并行数 10 就出现过）。所以每个线程各自加载一份。"""
+    （1.7-beta 约 2000 张、并行数 10 的测试中出现过）。所以每个线程各自加载一份。"""
     cache = getattr(_cascades, "d", None)
     if cache is None:
         cache = _cascades.d = {}
