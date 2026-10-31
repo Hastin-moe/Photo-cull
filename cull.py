@@ -545,11 +545,18 @@ def capture_time(e: dict, path: Path) -> float:
 
 # ───────────────────────── 技术分析 ─────────────────────────
 
-_cascades = {}
+_cascades = threading.local()
 
 def _cascade(name: str):
-    """OpenCV 4.x 自带 Haar 模型；不可用时返回 None（跳过人脸检测）。"""
-    if name not in _cascades:
+    """OpenCV 4.x 自带 Haar 模型；不可用时返回 None（跳过人脸检测）。
+
+    CascadeClassifier 不是线程安全的：多个线程同时用同一个对象做 detectMultiScale，
+    会在 OpenCV 内部（HaarEvaluator 的积分图缓冲区）互相踩内存，整个程序直接段错误闪退
+    （1.7-beta 大批量测试时并行数 10 就出现过）。所以每个线程各自加载一份。"""
+    cache = getattr(_cascades, "d", None)
+    if cache is None:
+        cache = _cascades.d = {}
+    if name not in cache:
         c = None
         try:
             c = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, name))
@@ -557,8 +564,8 @@ def _cascade(name: str):
                 c = None
         except AttributeError:
             c = None
-        _cascades[name] = c
-    return _cascades[name]
+        cache[name] = c
+    return cache[name]
 
 
 def lap_var(gray: np.ndarray) -> float:
