@@ -42,7 +42,12 @@ def pick_python() -> str:
     for c in cands:
         if Path(c).is_file() and os.access(c, os.X_OK):
             return c
-    return getattr(sys, "_base_executable", None) or sys.executable
+    # 不用虚拟环境里的 python 去建另一个虚拟环境（会串成一条链，文件夹一挪就全断）：找它背后真正的 Python
+    for c in (Path(sys.base_prefix) / "bin" / f"python{sys.version_info[0]}.{sys.version_info[1]}",
+              Path(sys.base_prefix) / "bin" / "python3"):
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return str(Path(sys.executable).resolve())
 
 
 def version() -> str:
@@ -89,11 +94,15 @@ def main(argv=None) -> int:
         shutil.rmtree(BUILD_VENV, ignore_errors=True)
 
     py = setup_env.venv_python(BUILD_VENV)
-    if not py.is_file():
+    if BUILD_VENV.exists() and not py.exists():
+        # 虚拟环境不能挪位置：项目文件夹移动过以后，里面的 python 还指着旧路径，直接重建
+        print("  打包环境 .venv-build 已失效（项目文件夹移动过？），删掉重建", flush=True)
+        shutil.rmtree(BUILD_VENV, ignore_errors=True)
+    if not py.exists():
         print("① 创建打包环境 .venv-build", flush=True)
         base = pick_python()
         print(f"  用 {base}", flush=True)
-        if run([base, "-m", "venv", BUILD_VENV]) != 0:
+        if run([base, "-m", "venv", "--clear", BUILD_VENV]) != 0:
             print("创建打包环境失败。")
             return 1
     extra = setup_env.pip_args(setup_env.pick_mirror(a.mirror), None)
